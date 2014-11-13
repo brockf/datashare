@@ -1,0 +1,488 @@
+---
+title: "ANCAT Analysis"
+output:
+  html_document:
+    toc: true
+---
+
+Analysis Timestamp:
+```{r}
+date()
+```
+
+# Dependencies
+
+```{r results='hide'}
+library(plyr, quietly=T)
+library(ggplot2, quietly=T)
+library(reshape2, quietly=T)
+library(lme4, quietly=T)
+library(psych, quietly=T)
+```
+
+# Configuration
+
+```{r}
+window_start <- 15500 # 15500 includes -500ms pre word onset, set to 16000 for word onset
+```
+
+# Processing...
+
+```{r results='hide', cache=TRUE}
+source('./../process_tobii_data_bf.R')
+auto_process_tobii('ancat-aoi.txt','ancat-phasetiming.txt')
+concat_csv('master.csv')
+
+# fix subject names
+master <- read.csv('master.csv')
+master$ParticipantName <- gsub('[^a-zA-Z0-9]','',master$ParticipantName)
+write.csv(master,'master.csv')
+
+source('./../analyze-eyetracking.R')
+prepare_master(subjectfile = './../subjects.csv', trialfile = FALSE)
+
+# create clean file
+file.copy('master-prepared.csv','master-clean.csv',overwrite = T)
+
+# exclude exclusions
+master_clean <- read.csv('master-clean.csv')
+master_clean <- master_clean[which(master_clean$Excluded == 0), ]
+
+# get rid of additional Condition.x and use the Condition.y column from
+# the subjects file
+master_clean <- master_clean[ , -which(names(master_clean) %in% c("Condition.x"))]
+names(master_clean)[names(master_clean)=="Condition.y"] <- "Condition"
+
+# add KnownAnimal column
+master_clean$KnownAnimal <- 0
+master_clean[which(master_clean$Trial == 'UnfamiliarArmadillo' & master_clean$Armadillo == 1), 'KnownAnimal'] <- 1
+master_clean[which(master_clean$Trial == 'UnfamiliarFlamingo' & master_clean$Flamingo == 1), 'KnownAnimal'] <- 1
+master_clean[which(master_clean$Trial == 'UnfamiliarLizard' & master_clean$Lizard == 1), 'KnownAnimal'] <- 1
+master_clean[which(master_clean$Trial == 'UnfamiliarHedgehog' & master_clean$Hedgehog == 1), 'KnownAnimal'] <- 1
+master_clean[which(master_clean$Trial == 'UnfamiliarLemur' & master_clean$Lemur == 1), 'KnownAnimal'] <- 1
+master_clean[which(master_clean$Trial == 'UnfamiliarRhino' & master_clean$Rhinoceros == 1), 'KnownAnimal'] <- 1
+
+# add KnownVerb column
+master_clean$KnownVerb <- 0
+master_clean[which(master_clean$Trial == 'UnfamiliarHedgehog' & master_clean$Condition == 'informative' & master_clean$Sleep == 1), 'KnownVerb'] <- 1
+master_clean[which(master_clean$Trial == 'UnfamiliarArmadillo' & master_clean$Condition == 'informative' & master_clean$Look == 1), 'KnownVerb'] <- 1
+master_clean[which(master_clean$Trial == 'UnfamiliarLizard' & master_clean$Condition == 'informative' & master_clean$Cry == 1), 'KnownVerb'] <- 1
+master_clean[which(master_clean$Trial == 'UnfamiliarFlamingo' & master_clean$Condition == 'informative' & master_clean$Dance == 1), 'KnownVerb'] <- 1
+master_clean[which(master_clean$Trial == 'UnfamiliarLemur' & master_clean$Condition == 'informative' & master_clean$Eat == 1), 'KnownVerb'] <- 1
+master_clean[which(master_clean$Trial == 'UnfamiliarRhino' & master_clean$Condition == 'informative' & master_clean$Drink == 1), 'KnownVerb'] <- 1
+
+# add Verb column
+master_clean$Verb <- ''
+master_clean[which(master_clean$Trial == 'UnfamiliarHedgehog'), 'Verb'] <- 'Sleep'
+master_clean[which(master_clean$Trial == 'UnfamiliarArmadillo'), 'Verb'] <- 'Look'
+master_clean[which(master_clean$Trial == 'UnfamiliarLizard'), 'Verb'] <- 'Cry'
+master_clean[which(master_clean$Trial == 'UnfamiliarFlamingo'), 'Verb'] <- 'Dance'
+master_clean[which(master_clean$Trial == 'UnfamiliarLemur'), 'Verb'] <- 'Eat'
+master_clean[which(master_clean$Trial == 'UnfamiliarRhino'), 'Verb'] <- 'Drink'
+
+# re-name factor levels.
+levels(master_clean$Condition) <- c('Informative','Neutral')
+
+write.csv(master_clean,'master-clean.csv',row.names = FALSE)
+```
+
+Set data options for **eyetrackingR** library.
+
+```{r results='hide'}
+# set data options
+data_options <- set_data_options(
+  time_factor = 'TimeFromPhaseOnset',
+  sample_factor = 'FramesFromPhaseOnset',
+  default_dv = 'Animate',
+  default_factors = c('Condition')
+)
+
+# treat outside looks as trackloss
+master_clean <- treat_outside_looks_as_trackloss(master_clean, data_options)
+```
+
+# Subject Data
+
+```{r}
+subjects <- ddply(master_clean, .(ParticipantName), summarize, Condition = Condition[1], Age = mean(Age), Sex = Sex[1], KnownVerbs = sum(Eat[1], Cry[1], Sleep[1], Drink[1], Dance[1], Look[1]), MCDI_Total = mean(MCDI_Total), MCDI_Verbs = mean(MCDI_Verbs), MCDI_Nouns = mean(MCDI_Nouns))
+
+subjects
+
+describe(subjects)
+
+subjects_by_condition <- ddply(subjects, .(Condition), summarize, N = length(Age), Age = mean(Age), Males = length(Sex[which(Sex == 'M')]), KnownVerbs = mean(KnownVerbs), MCDI_Total = mean(MCDI_Total), MCDI_Verbs = mean(MCDI_Verbs), MCDI_Nouns = mean(MCDI_Nouns))
+
+subjects_by_condition
+```
+
+# Familiar Trials
+
+```{r results='hide'}
+master_familiar <- clean_by_factor(master_clean, data_options, 'Trial', c('FamiliarBottle','FamiliarDog','FamiliarHorse','FamiliarSpoon','FamiliarBird','FamiliarCow'))
+
+# get trackloss
+familiar_trackloss <- get_trackloss_data(master_familiar, data_options, window_start = window_start, window_end = 21000)
+```
+
+Get trackloss statistics
+
+```{r}
+describe(familiar_trackloss$trackloss$SamplesLooking)
+```
+
+Trim trials by trackloss (`minimum_samples`). How many trials were dropped?
+
+```{r}
+# trim by trackloss MEAN-2*SD
+minimum_samples <- mean(familiar_trackloss$trackloss$SamplesLooking) - (2*sd(familiar_trackloss$trackloss$SamplesLooking))
+minimum_samples
+
+# minimum is 60 (e.g., 1 second)
+if (minimum_samples < 60) {
+  minimum_samples <- 60
+}
+
+master_familiar <- clean_by_trackloss(master_familiar, data_options, window_start = window_start, window_end = 21000, minimum_samples = minimum_samples)
+familiar_trial_counts <- final_trial_counts(master_familiar, data_options, window_start = window_start, window_end = 21000)
+```
+
+Get final trial counts.
+
+```{r}
+describe(familiar_trial_counts$Trials)
+```
+
+Remove all trackloss and prepare dataset.
+
+```{r}
+master_familiar <- remove_trackloss(master_familiar, data_options)
+
+# create test window
+familiar_test_response <- subset_by_window(master_familiar, data_options, window_start = window_start, window_end = 21000)
+
+# add TargetType column and set appropriate values
+familiar_test_response$Target <- 'Animate'
+familiar_test_response[which(familiar_test_response$Trial %in% c('FamiliarBottle','FamiliarSpoon')), 'Target'] <- 'Inanimate'
+
+# rename levels to Animal, Artefact
+familiar_test_response$Target <- factor(familiar_test_response$Target)
+levels(familiar_test_response$Target) <- c('Animal','Artefact')
+```
+
+Generate the standard 250ms-bin plot with error bars.
+
+```{r}
+plot_data(familiar_test_response, data_options, 'graph-familiar-test.png', dv = 'Animate', factor = 'Target', y_title = 'Proportion Looking to Animal', x_title = 'Time post Noun-onset (ms)', bin_time = 250, width = 3000, height = 2000, x_gap = 500)
+```
+
+Do an aggregate window analysis.
+
+```{r results='hide'}
+# aggregate across window
+# just use Order for now... which won't affect anything
+window_familiar_response <- window_analysis(familiar_test_response, data_options, dv = 'Animate', factors=c('Target'))
+
+# write to CSV file so we can do age comparisons later
+write.csv(window_familiar_response, 'window-familiar-response-15.csv')
+
+# aggregate by participants
+familiar_agg_response <- aggregate(window_familiar_response$Proportion, by = list(window_familiar_response$ParticipantName,window_familiar_response$Target), FUN = mean)
+colnames(familiar_agg_response) <- c('ParticipantName','Target','ProportionAnimate')
+```
+
+Plot proportion looking to animal.
+
+```{r}
+ggplot(familiar_agg_response, aes(y=ProportionAnimate, x=Target)) + 
+                          geom_boxplot() +
+                          geom_point() + 
+                          scale_y_continuous('Proportion Looking toward Animal', breaks = seq(0,1,.25)) + 
+                          coord_cartesian(ylim=c(0,1))
+```
+
+## Condition means.
+
+```{r}
+familiar_condition_means <- ddply(familiar_agg_response, .(Target), summarize, mean = mean(ProportionAnimate), sd = sd(ProportionAnimate), N = length(ProportionAnimate))
+familiar_condition_means$se <- familiar_condition_means$sd / sqrt(familiar_condition_means$N)
+
+familiar_condition_means
+```
+
+## Simple paired raw and arcsine-root transformed t-tests:
+
+```{r}
+t.test(familiar_agg_response[which(familiar_agg_response$Target == 'Animal'), 'ProportionAnimate'],
+       familiar_agg_response[which(familiar_agg_response$Target == 'Artefact'), 'ProportionAnimate'],
+       paired = T)
+
+t.test(asin(sqrt(familiar_agg_response[which(familiar_agg_response$Target == 'Animal'), 'ProportionAnimate'])),
+       asin(sqrt(familiar_agg_response[which(familiar_agg_response$Target == 'Artefact'), 'ProportionAnimate'])),
+       paired = T)
+```
+
+Simple one-sample t-tests for comparison to chance and confidence intervals:
+
+```{r}
+t.test(familiar_agg_response[which(familiar_agg_response$Target == 'Animal'), 'ProportionAnimate'], mu = .5)
+
+t.test(familiar_agg_response[which(familiar_agg_response$Target == 'Artefact'), 'ProportionAnimate'], mu = .5)
+```
+
+## Mixed-effects model:
+
+```{r}
+model <- lmer(ArcSin ~ Target + (1 | Trial) + (1 | ParticipantName), data = window_familiar_response, REML = F)
+summary(model)
+
+model_null <- lmer(ArcSin ~ 1 + (1 | Trial) + (1 | ParticipantName), data = window_familiar_response, REML = F)
+anova(model,model_null)
+```
+
+## 250ms sequential bins analysis.
+
+```{r results='hide'}
+familiar_bins <- sequential_bins_analysis(familiar_test_response, data_options, dv = 'Animate',
+                                          factor = 'Target', bin_time = 250)
+```
+
+```{r}
+familiar_bins
+```
+
+## Distractor-switch analysis:
+
+```{r}
+first_looks_familiar <- first_looks_analysis(familiar_test_response, data_options, c('Target'))
+agg_first_looks_familiar <- ddply(first_looks_familiar, .(ParticipantName, Target, FirstAOI), summarize, SecondStartTime = mean(SecondStartTime))
+familiar_switches <- ddply(agg_first_looks_familiar, .(Target,FirstAOI), summarize, SwitchTime = mean(SecondStartTime), SwitchTimeSD = sd(SecondStartTime))
+
+ggplot(agg_first_looks_familiar, aes(x=Target, y=SecondStartTime, color=FirstAOI)) + geom_boxplot()
+```
+
+# Unfamiliar Trials
+
+Create dataset.
+
+```{r results='hide'}
+master_unfamiliar <- clean_by_factor(master_clean, data_options, 'Trial', c('UnfamiliarLemur','UnfamiliarRhino','UnfamiliarArmadillo','UnfamiliarLizard','UnfamiliarHedgehog','UnfamiliarFlamingo'))
+```
+
+Analyze trackloss.
+
+```{r}
+# get trackloss
+unfamiliar_trackloss <- get_trackloss_data(master_unfamiliar, data_options, window_start = window_start, window_end = 21000)
+
+# trim by trackloss MEAN-2*SD
+minimum_samples <- mean(unfamiliar_trackloss$trackloss$SamplesLooking) - (2*sd(unfamiliar_trackloss$trackloss$SamplesLooking))
+minimum_samples
+
+# minimum is 60 (e.g., 1 second)
+#if (minimum_samples < 60) {
+#  minimum_samples <- 60
+#}
+
+master_unfamiliar <- clean_by_trackloss(master_unfamiliar, data_options, window_start = window_start, window_end = 21000, minimum_samples = minimum_samples)
+
+unfamiliar_trial_counts <- final_trial_counts(master_unfamiliar, data_options, window_start = window_start, window_end = 21000)
+```
+
+Get final trial counts
+
+```{r}
+describe(unfamiliar_trial_counts$Trials)
+```
+
+Remove all trackloss.
+
+```{r results='hide'}
+master_unfamiliar <- remove_trackloss(master_unfamiliar, data_options)
+```
+
+Create aggregated window dataset.
+
+```{r results='hide'}
+unfamiliar_test_response <- subset_by_window(master_unfamiliar, data_options, window_start = window_start, window_end = 21000)
+
+# aggregate across window
+window_unfamiliar_response <- window_analysis(unfamiliar_test_response, data_options, dv = 'Animate', factors=c('Condition','Age','MCDI_Total','MCDI_Nouns','MCDI_Verbs','KnownVerb','KnownAnimal','Verb'))
+
+# write to CSV file so we can do age comparisons later
+write.csv(window_unfamiliar_response, 'window-unfamiliar-response-15.csv')
+
+# aggregate by participants
+unfamiliar_agg_response <- aggregate(window_unfamiliar_response$Proportion, by = list(window_unfamiliar_response$ParticipantName,window_unfamiliar_response$Condition,window_unfamiliar_response$Age,window_unfamiliar_response$MCDI_Total,window_unfamiliar_response$MCDI_Nouns,window_unfamiliar_response$MCDI_Verbs), FUN = mean)
+colnames(unfamiliar_agg_response) <- c('ParticipantName','Condition','Age','MCDI_Total','MCDI_Nouns','MCDI_Verbs','ProportionAnimate')
+```
+
+Plot standard 250-ms bin timecourse.
+
+```{r}
+plot_data(unfamiliar_test_response, data_options, 'graph-unfamiliar-test.png',
+          dv = 'Animate', factor = 'Condition', y_title = 'Proportion Looking to Animal', x_title = 'Time post Noun-onset (ms)', bin_time = 250, width = 3000, height = 2000, x_gap = 500)
+```
+
+Plot aggregate data.
+
+```{r}
+ggplot(unfamiliar_agg_response, aes(y=ProportionAnimate, x=Condition)) + 
+                    geom_boxplot() +
+                    geom_point() +
+                    scale_y_continuous('Proportion Looking toward Animal', breaks = seq(0,1,.25)) + 
+                    coord_cartesian(ylim=c(0,1))
+```
+
+## Condition means.
+
+```{r}
+condition_means <- ddply(unfamiliar_agg_response, .(Condition), summarize, mean = mean(ProportionAnimate), sd = sd(ProportionAnimate), N = length(ProportionAnimate), Age = mean(Age))
+condition_means$se <- condition_means$sd / sqrt(condition_means$N)
+
+condition_means
+```
+
+## Simple raw and arcsin-root transformed t-tests:
+
+```{r}
+t.test(unfamiliar_agg_response[which(unfamiliar_agg_response$Condition == 'Informative'), 'ProportionAnimate'],
+       unfamiliar_agg_response[which(unfamiliar_agg_response$Condition == 'Neutral'), 'ProportionAnimate'],
+       var.equal = T)
+
+t.test(asin(sqrt(unfamiliar_agg_response[which(unfamiliar_agg_response$Condition == 'Informative'), 'ProportionAnimate'])),
+       asin(sqrt(unfamiliar_agg_response[which(unfamiliar_agg_response$Condition == 'Neutral'), 'ProportionAnimate'])),
+       var.equal = T)
+```
+
+Simple one-sample t-tests for comparison to chance and confidence intervals:
+
+```{r}
+t.test(unfamiliar_agg_response[which(unfamiliar_agg_response$Condition == 'Informative'), 'ProportionAnimate'], mu = .5)
+
+t.test(unfamiliar_agg_response[which(unfamiliar_agg_response$Condition == 'Neutral'), 'ProportionAnimate'], mu = .5)
+```
+
+## Mixed-effects model:
+
+```{r}
+model <- lmer(ArcSin ~ Condition + (1 | Trial) + (1 | ParticipantName), data = window_unfamiliar_response, REML = F)
+summary(model)
+
+model_null <- lmer(ArcSin ~ 1 + (1 | Trial) + (1 | ParticipantName), data = window_unfamiliar_response, REML = F)
+anova(model,model_null)
+```
+
+## 250ms sequential bins analysis.
+
+```{r results='hide'}
+unfamiliar_bins <- sequential_bins_analysis(unfamiliar_test_response, data_options,
+                                            dv = 'Animate', factor = 'Condition', bin_time = 250)
+```
+
+```{r}
+unfamiliar_bins
+```
+
+## Distractor-switch analysis:
+
+```{r}
+first_looks_unfamiliar <- first_looks_analysis(unfamiliar_test_response, data_options, c('Condition'))
+agg_first_looks_unfamiliar <- ddply(first_looks_unfamiliar, .(ParticipantName, Condition, FirstAOI), summarize, SecondStartTime = mean(SecondStartTime))
+unfamiliar_switches <- ddply(agg_first_looks_unfamiliar, .(Condition,FirstAOI), summarize, SwitchTime = mean(SecondStartTime), SwitchTimeSD = sd(SecondStartTime))
+
+ggplot(agg_first_looks_unfamiliar, aes(x=Condition, y=SecondStartTime, color=FirstAOI)) + geom_boxplot()
+```
+
+## Does performance in the Informative condition correlate with Age or MCDI scores?
+
+```{r}
+unfamiliar_agg_response$MCDI_Verbs <- as.numeric(as.character(unfamiliar_agg_response$MCDI_Verbs))
+unfamiliar_agg_response$MCDI_Nouns <- as.numeric(as.character(unfamiliar_agg_response$MCDI_Nouns))
+unfamiliar_agg_response$MCDI_Total <- as.numeric(as.character(unfamiliar_agg_response$MCDI_Total))
+unfamiliar_agg_response$Age <- as.numeric(as.character(unfamiliar_agg_response$Age))
+```
+
+Simultaneous model fit:
+
+```{r}
+model <- lm(ProportionAnimate ~ Age + MCDI_Total, data=subset(unfamiliar_agg_response, Condition == 'Informative'))
+summary(model)
+
+model <- lm(ProportionAnimate ~ Age + MCDI_Nouns, data=subset(unfamiliar_agg_response, Condition == 'Informative'))
+summary(model)
+
+model <- lm(ProportionAnimate ~ Age + MCDI_Verbs, data=subset(unfamiliar_agg_response, Condition == 'Informative'))
+summary(model)
+
+model <- lm(ProportionAnimate ~ Age + MCDI_Verbs + MCDI_Nouns, data=subset(unfamiliar_agg_response, Condition == 'Informative'))
+summary(model)
+
+```
+
+Total vocab:
+
+```{r}
+ggplot(subset(unfamiliar_agg_response, Condition == 'Informative'), aes(x=MCDI_Total, y=ProportionAnimate)) + geom_point() + stat_smooth(method="lm")
+
+cor.test(unfamiliar_agg_response[which(unfamiliar_agg_response$Condition == 'Informative'), 'ProportionAnimate'],unfamiliar_agg_response[which(unfamiliar_agg_response$Condition == 'Informative'), 'MCDI_Total'])
+```
+
+Nouns:
+
+```{r}
+ggplot(subset(unfamiliar_agg_response, Condition == 'Informative'), aes(x=MCDI_Nouns, y=ProportionAnimate)) + geom_point() + stat_smooth(method="lm")
+
+cor.test(unfamiliar_agg_response[which(unfamiliar_agg_response$Condition == 'Informative'), 'ProportionAnimate'],unfamiliar_agg_response[which(unfamiliar_agg_response$Condition == 'Informative'), 'MCDI_Nouns'])
+```
+
+Verbs:
+
+```{r}
+ggplot(subset(unfamiliar_agg_response, Condition == 'Informative'), aes(x=MCDI_Verbs, y=ProportionAnimate)) + geom_point() + stat_smooth(method="lm")
+
+cor.test(unfamiliar_agg_response[which(unfamiliar_agg_response$Condition == 'Informative'), 'ProportionAnimate'],unfamiliar_agg_response[which(unfamiliar_agg_response$Condition == 'Informative'), 'MCDI_Verbs'])
+```
+
+## Is performance in either condition influenced by whether they knew the animal's name? (i.e., mutual exclusivity)
+
+Get cell means based on known animal status:
+
+```{r}
+condition_means_animalname <-  ddply(window_unfamiliar_response, .(Condition,KnownAnimal), summarize, mean = mean(Proportion), sd = sd(Proportion), N = length(Proportion))
+condition_means_animalname$se <- condition_means_animalname$sd / sqrt(condition_means_animalname$sd)
+
+condition_means_animalname
+```
+
+Mixed-effects model including this parameter:
+
+```{r}
+
+# interacting with Condition
+model <- lmer(ArcSin ~ Condition*KnownAnimal + (1 | Trial) + (1 | ParticipantName), data = window_unfamiliar_response, REML = F)
+summary(model)
+
+model_null <- lmer(ArcSin ~ 1 + (1 | Trial) + (1 | ParticipantName), data = window_unfamiliar_response, REML = F)
+anova(model,model_null)
+
+# by itself
+model <- lmer(ArcSin ~ KnownAnimal + (1 | Trial) + (1 | ParticipantName), data = window_unfamiliar_response, REML = F)
+summary(model)
+
+model_null <- lmer(ArcSin ~ 1 + (1 | Trial) + (1 | ParticipantName), data = window_unfamiliar_response, REML = F)
+anova(model,model_null)
+
+```
+
+## Did performance vary by actual verb used?
+
+```{r}
+unfamiliar_by_verb <- ddply(window_unfamiliar_response, .(Trial,Verb,Condition), summarize, mean = mean(Proportion), sd=sd(Proportion), N=length(window_unfamiliar_response))
+unfamiliar_by_verb$se <- unfamiliar_by_verb$sd / sqrt(unfamiliar_by_verb$N)
+
+unfamiliar_by_verb <- unfamiliar_by_verb[order(unfamiliar_by_verb$Verb, unfamiliar_by_verb$Condition), ]
+
+unfamiliar_by_verb
+
+ggplot(unfamiliar_by_verb, aes(Verb, mean)) + geom_bar(aes(fill = Condition), stat="identity", position = "dodge")
+```

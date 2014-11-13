@@ -1,0 +1,16 @@
+base
+data.table
+datasets
+dplyr
+ggplot2
+graphics
+grDevices
+lme4
+Matrix
+methods
+plyr
+psych
+Rcpp
+reshape2
+stats
+utils
