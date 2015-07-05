@@ -170,7 +170,7 @@ agg_by_diff_N <- sim_data_melted %>%
                   filter(condition_diff > .01 & condition_diff < .8,
                          sample_sizes < 99) %>%
                   mutate(BinSample = sample_sizes %/% 10,
-                         BinSample = (BinSample+1)*10,
+                         BinSample = (BinSample)*10,
                          BinDiff = round(condition_diff,1)) %>%
                   group_by(BinDiff,BinSample,test) %>%
                   summarise(mean_sig = mean(sig), N=length(sig)) %>%
