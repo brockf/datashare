@@ -111,7 +111,7 @@ sim_data$condition_diff <- abs(sim_data$condition_1 - sim_data$condition_2)
 # overall Type I error rates
 colMeans(sim_data[, c(6:9)])
 
-####### Analysis 1: type 1 error rates by sample size
+####### Analysis 1: power by sample size
 
 # melt and visualize
 sim_data_melted <- melt(sim_data, id.vars=c('simulation','sample_sizes','num_trials','grand_mean','condition_diff'), measure.vars = c('sig_logit','sig_elogit','sig_arcsin','sig_prop'), variable.name="test", value.name="sig")
@@ -138,7 +138,7 @@ p
 dev.off()
 p
 
-####### Analysis 2: type 1 error rates by condition diff
+####### Analysis 2: power by condition diff
 
 # aggregate by diff, and bin by .10
 agg_by_diff <- sim_data_melted %>%
@@ -153,7 +153,7 @@ p <- ggplot(agg_by_diff, aes(x=BinDiff, y=mean_sig, color=test)) +
                                 #stat_smooth(method="loess", se=FALSE, size=1) +
                                 scale_color_discrete(name="", labels=c('Logistic Regression','Empirical Logit','Arcsin-Root','Raw Proportions')) +
                                 scale_y_continuous(name="Power") +
-                                scale_x_continuous(name="Grand Mean", breaks=seq(0,1.0,by=.1)) +
+                                scale_x_continuous(name="Effect Size", breaks=seq(0,1.0,by=.1)) +
                                 theme(legend.position="top")
 
 png(filename = "figures/power-by-effect.png",
@@ -163,7 +163,39 @@ p
 dev.off()
 p
 
-####### Analysis 3: when do these tests not agree?
+####### Analysis 3: power by crossed diff*N
+
+# aggregate by diff, and bin by .10
+agg_by_diff_N <- sim_data_melted %>%
+                  filter(condition_diff > .01 & condition_diff < .8,
+                         sample_sizes < 99) %>%
+                  mutate(BinSample = sample_sizes %/% 10,
+                         BinSample = (BinSample+1)*10,
+                         BinDiff = round(condition_diff,1)) %>%
+                  group_by(BinDiff,BinSample,test) %>%
+                  summarise(mean_sig = mean(sig), N=length(sig)) %>%
+                  ungroup()
+
+agg_by_diff_N$BinSampleLabel <- paste0('N = ', agg_by_diff_N$BinSample)
+agg_by_diff_N$BinSampleLabel <- factor(agg_by_diff_N$BinSampleLabel, levels=unique(paste0('N = ', agg_by_diff_N$BinSample)))
+
+p <- ggplot(agg_by_diff_N, aes(x=BinDiff, y=mean_sig, color=test)) +
+  geom_line() +
+  #stat_smooth(method="loess", se=FALSE, size=1) +
+  scale_color_discrete(name="", labels=c('Logistic Regression','Empirical Logit','Arcsin-Root','Raw Proportions')) +
+  scale_y_continuous(name="Power") +
+  scale_x_continuous(name="Effect Size") +
+  theme(legend.position="top") +
+  facet_wrap(~BinSampleLabel)
+
+png(filename = "figures/power-by-effect-and-N.png",
+    width = 3000, height = 2500, units = "px", pointsize = 16,
+    bg = "white", res = 400)
+p
+dev.off()
+p
+
+####### Analysis 4: when do these tests not agree?
 
 sim_data <- sim_data %>%
   mutate(SumSig = sig_logit + sig_elogit + sig_arcsin + sig_prop,
