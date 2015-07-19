@@ -9,10 +9,15 @@ sims <- 100000
 
 sim_data <- data.frame(
                   simulation = 1:sims,
-                  condition_1 = 0,
-                  condition_2 = 0,
+                  alpha = 0,
+                  beta = 0,
                   sample_sizes = 0,
                   num_trials = 0,
+                  condition_1 = 0,
+                  condition_2 = 0,
+                  condition_1_sd = 0,
+                  condition_2_sd = 0,
+                  pop_sd = 0,
                   sig_logit = 0,
                   sig_elogit = 0,
                   sig_arcsin = 0,
@@ -20,27 +25,10 @@ sim_data <- data.frame(
               )
 
 for (i in 1:sims) {
-  # uniformly sample overall mean
-  grand_mean <- runif(1, 0, 1)
-  
-  # uniformly sample difference between conditions
-  # condition_diff <- runif(1, 0, 1)
-  
-  # for now, we'll set condition_diff to 0 so we can evaluate Type 1 error rates
-  condition_diff <- 0
-  
-  # determine condition means, with limits at .9 and .1
-  condition_1 <- grand_mean - (condition_diff/2)
-  condition_2 <- grand_mean + (condition_diff/2)
-  
-  condition_1 <- ifelse(condition_1 > .9, .9, condition_1)
-  condition_1 <- ifelse(condition_1 < .1, .1, condition_1)
-  
-  condition_2 <- ifelse(condition_2 > .9, .9, condition_2)
-  condition_2 <- ifelse(condition_2 < .1, .1, condition_2)
-  
-  # re-calculate grand_mean in case we made ceiling/floor adjustments
-  grand_mean <- mean(condition_1, condition_2)
+  # sample an alpha and beta for our population
+  # samples will be sampled from same population
+  beta_alpha <- runif(1,1,1000)
+  beta_beta <- runif(1,1,1000)
   
   # uniformly sample sample sizes between 10-100 participants
   sample_sizes <- round(runif(1, 10, 100),0)
@@ -48,14 +36,26 @@ for (i in 1:sims) {
   # generate study data
   # 10 trials per participant
   num_trials <- round(runif(1, 2, 100),0)
-  sample_1 <- rbinom(num_trials*sample_sizes, 1, condition_1)
-  sample_2 <- rbinom(num_trials*sample_sizes, 1, condition_2)
   
-  # check samples for possible issues
-  while (var(sample_1) == 0 | var(sample_2) == 0) {
-    sample_1 <- rbinom(num_trials*sample_sizes, 1, condition_1)
-    sample_2 <- rbinom(num_trials*sample_sizes, 1, condition_2)
+  # sample subject means from beta distributions
+  condition_1_subjects <- rbeta(sample_sizes, beta_alpha, beta_beta)
+  condition_2_subjects <- rbeta(sample_sizes, beta_alpha, beta_beta)
+  
+  # set to zero to trigger sampling below
+  sample_1 <- 0
+  sample_2 <- 0
+  
+  # check samples for no variance (which will cause issues, so we re-sample)
+  while (length(sample_1) == 1 | (var(sample_1) == 0 | var(sample_2) == 0)) {
+    sample_1 <- rbinom(num_trials*sample_sizes, 1, rep(condition_1_subjects,each=num_trials))
+    sample_2 <- rbinom(num_trials*sample_sizes, 1, rep(condition_2_subjects,each=num_trials))
   }
+  
+  condition_1 <- mean(sample_1)
+  condition_2 <- mean(sample_2)
+  condition_1_sd <- sd(sample_1)
+  condition_2_sd <- sd(sample_2)
+  pop_sd <- sd(c(sample_1,sample_2))
   
   study_data <- data.frame(
                       subject = rep(paste0('subject',1:(sample_sizes*2)), each=num_trials),
@@ -91,10 +91,15 @@ for (i in 1:sims) {
   # enter into data
   sim_data[i, ] <- c(
                   i,
-                  mean(study_data_agg[which(study_data_agg$condition == 'condition1'), ]$Prop),
-                  mean(study_data_agg[which(study_data_agg$condition == 'condition2'), ]$Prop),
+                  beta_alpha,
+                  beta_beta,
                   sample_sizes,
                   num_trials,
+                  condition_1,
+                  condition_2,
+                  condition_1_sd,
+                  condition_2_sd,
+                  pop_sd,
                   sig_logit,
                   sig_elogit,
                   sig_arcsin,
@@ -109,7 +114,7 @@ beep(8)
 sim_data$grand_mean <- (sim_data$condition_1 + sim_data$condition_2) / 2
 
 # overall Type I error rates
-colMeans(sim_data[, c(6:9)])
+colMeans(sim_data[, c('sig_logit','sig_elogit','sig_arcsin','sig_prop')])
 
 ######### Analysis 1: type 1 error rates by sample size
 
