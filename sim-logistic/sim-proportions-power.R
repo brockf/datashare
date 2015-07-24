@@ -1,3 +1,4 @@
+library(data.table)
 library(dplyr)
 library(lme4)
 library(beepr)
@@ -5,79 +6,92 @@ library(ggplot2)
 library(reshape2)
 
 alpha <- .05
-sims <- 100000
+sims <- 50000
 
-# simulate a study with an actual difference 
-
-sim_data <- data.frame(
-                  simulation = 1:sims,
-                  condition_1 = 0,
-                  condition_2 = 0,
-                  sample_sizes = 0,
-                  num_trials = 0,
-                  sig_logit = 0,
-                  sig_elogit = 0,
-                  sig_arcsin = 0,
-                  sig_prop = 0
-              )
+sim_data <- data.table(
+  simulation = 1:sims,
+  alpha_1 = 0,
+  beta_1 = 0,
+  alpha_2 = 0,
+  beta_2 = 0,
+  sample_sizes = 0,
+  num_trials = 0,
+  condition_1 = 0,
+  condition_2 = 0,
+  condition_1_sd = 0,
+  condition_2_sd = 0,
+  pop_sd = 0,
+  sig_logit = 0,
+  sig_elogit = 0,
+  sig_arcsin = 0,
+  sig_prop = 0
+)
 
 for (i in 1:sims) {
-  # uniformly sample overall mean
-  grand_mean <- runif(1, 0, 1)
+  # set an alpha and beta for our two populations
+  # we will sample these by sampling an "scale" value which will scale or alphas/betas
+  # then we sample a random proportion which represents the skew towards hits versus misses
+  # this will hold our population SD approximately equal between conditions
+  scale <- round(runif(1,2,1000),0)
   
-  # uniformly sample difference between conditions
-  condition_diff <- runif(1, .01, .8) #.8 because that's the maximum difference between our condition means, forced below
+  # .5 represents indiscriminable, huge effects at the tails
+  discrimination <- runif(1,0.01,0.99)
   
-  # determine condition means, with limits at .9 and .1
-  condition_1 <- grand_mean - (condition_diff/2)
-  condition_2 <- grand_mean + (condition_diff/2)
+  beta_1_alpha <- round(scale*discrimination,0)
+  beta_1_beta <- round(scale-round(scale*discrimination,0),0)
   
-  condition_1 <- ifelse(condition_1 > .9, .9, condition_1)
-  condition_1 <- ifelse(condition_1 < .1, .1, condition_1)
-  
-  condition_2 <- ifelse(condition_2 > .9, .9, condition_2)
-  condition_2 <- ifelse(condition_2 < .1, .1, condition_2)
-  
-  # re-calculate grand_mean in case we made ceiling/floor adjustments
-  grand_mean <- mean(condition_1, condition_2)
+  beta_2_alpha <- round(scale-round(scale*discrimination,0),0)
+  beta_2_beta <- round(scale*discrimination,0)
   
   # uniformly sample sample sizes between 10-100 participants
   sample_sizes <- round(runif(1, 10, 100),0)
- 
+  
   # generate study data
   # 10 trials per participant
   num_trials <- round(runif(1, 2, 100),0)
-  sample_1 <- rbinom(num_trials*sample_sizes, 1, condition_1)
-  sample_2 <- rbinom(num_trials*sample_sizes, 1, condition_2)
   
-  # check samples for possible issues
-  while (var(sample_1) == 0 | var(sample_2) == 0) {
-    sample_1 <- rbinom(num_trials*sample_sizes, 1, condition_1)
-    sample_2 <- rbinom(num_trials*sample_sizes, 1, condition_2)
+  # sample subject means from beta distributions
+  condition_1_subjects <- rbeta(sample_sizes, beta_1_alpha, beta_1_beta)
+  condition_2_subjects <- rbeta(sample_sizes, beta_2_alpha, beta_2_beta)
+  
+  # set to zero to trigger sampling below
+  sample_1 <- 0
+  sample_2 <- 0
+  
+  # check samples for no variance (which will cause issues, so we re-sample)
+  while (length(sample_1) == 1 | (var(sample_1) == 0 | var(sample_2) == 0)) {
+    sample_1 <- rbinom(num_trials*sample_sizes, 1, rep(condition_1_subjects,each=num_trials))
+    sample_2 <- rbinom(num_trials*sample_sizes, 1, rep(condition_2_subjects,each=num_trials))
   }
   
   study_data <- data.frame(
-                      subject = rep(paste0('subject',1:(sample_sizes*2)), each=num_trials),
-                      condition = rep(c('condition1','condition2'), each=(sample_sizes*num_trials)),
-                      trial = rep(1:num_trials, times=(sample_sizes*2)),
-                      response = c(sample_1,sample_2)
-                  )
+    subject = rep(paste0('subject',1:(sample_sizes*2)), each=num_trials),
+    condition = rep(c('condition1','condition2'), each=(sample_sizes*num_trials)),
+    trial = rep(1:num_trials, times=(sample_sizes*2)),
+    response = c(sample_1,sample_2)
+  )
   
   study_data_agg <- study_data %>%
-                    group_by(subject, condition) %>%
-                    summarise(y=sum(response), N=length(response)) %>%
-                    ungroup() %>%
-                    mutate(
-                      Prop = y / N,
-                      elog = log( (y + .5) / (N - y + .5) ), # empirical logit
-                      Arcsin = asin(sqrt(Prop)) # arcsin-sqrt 
-                    )
+    group_by(subject, condition) %>%
+    summarise(y=sum(response), N=length(response)) %>%
+    ungroup() %>%
+    mutate(
+      Prop = y / N,
+      elog = log( (y + .5) / (N - y + .5) ), # empirical logit
+      Arcsin = asin(sqrt(Prop)) # arcsin-sqrt 
+    )
+  
+  condition_1 <- with(subset(study_data_agg, condition == 'condition1'), mean(Prop))
+  condition_2 <- with(subset(study_data_agg, condition == 'condition2'), mean(Prop))
+  condition_1_sd <- with(subset(study_data_agg, condition == 'condition1'), sd(Prop))
+  condition_2_sd <- with(subset(study_data_agg, condition == 'condition2'), sd(Prop))
+  pop_sd <- sd(study_data_agg$Prop)
   
   # logistic regression
   model <- glmer(response ~ condition + (1 | subject), data=study_data, family="binomial")
   zs <- fixef(model)/sqrt(diag(vcov(model)))
   sig_logit <- ifelse(2*pnorm(abs(zs),lower.tail=FALSE)[2] <= alpha, TRUE, FALSE)
-    
+  
   # empirical logit
   sig_elogit <- ifelse(t.test(elog ~ condition, data=study_data_agg, var.equal=T)$p.value <= alpha, TRUE, FALSE)
   
@@ -88,17 +102,27 @@ for (i in 1:sims) {
   sig_prop <- ifelse(t.test(Prop ~ condition, data=study_data_agg, var.equal=T)$p.value <= alpha, TRUE, FALSE)
   
   # enter into data
-  sim_data[i, ] <- c(
-                  i,
-                  mean(study_data_agg[which(study_data_agg$condition == 'condition1'), ]$Prop),
-                  mean(study_data_agg[which(study_data_agg$condition == 'condition2'), ]$Prop),
-                  sample_sizes,
-                  num_trials,
-                  sig_logit,
-                  sig_elogit,
-                  sig_arcsin,
-                  sig_prop
-                )
+  data <- c(
+    i,
+    beta_1_alpha,
+    beta_1_beta,
+    beta_2_alpha,
+    beta_2_beta,
+    sample_sizes,
+    num_trials,
+    condition_1,
+    condition_2,
+    condition_1_sd,
+    condition_2_sd,
+    pop_sd,
+    sig_logit,
+    sig_elogit,
+    sig_arcsin,
+    sig_prop
+  )
+  data <- as.vector(data)
+  
+  sim_data[i, names(sim_data) := as.list(data)]
 }
 
 # play the Mario sound when it's done
@@ -108,8 +132,8 @@ beep(8)
 sim_data$grand_mean <- (sim_data$condition_1 + sim_data$condition_2) / 2
 sim_data$condition_diff <- abs(sim_data$condition_1 - sim_data$condition_2)
 
-# overall Type I error rates
-colMeans(sim_data[, c(6:9)])
+# overall power rates
+colMeans(sim_data[, c('sig_logit','sig_elogit','sig_arcsin','sig_prop')])
 
 ####### Analysis 1: power by sample size
 

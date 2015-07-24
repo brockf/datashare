@@ -1,3 +1,4 @@
+library(data.table)
 library(dplyr)
 library(lme4)
 library(beepr)
@@ -5,9 +6,9 @@ library(ggplot2)
 library(reshape2)
 
 alpha <- .05
-sims <- 100000
+sims <- 50000
 
-sim_data <- data.frame(
+sim_data <- data.table(
                   simulation = 1:sims,
                   alpha = 0,
                   beta = 0,
@@ -51,12 +52,6 @@ for (i in 1:sims) {
     sample_2 <- rbinom(num_trials*sample_sizes, 1, rep(condition_2_subjects,each=num_trials))
   }
   
-  condition_1 <- mean(sample_1)
-  condition_2 <- mean(sample_2)
-  condition_1_sd <- sd(sample_1)
-  condition_2_sd <- sd(sample_2)
-  pop_sd <- sd(c(sample_1,sample_2))
-  
   study_data <- data.frame(
                       subject = rep(paste0('subject',1:(sample_sizes*2)), each=num_trials),
                       condition = rep(c('condition1','condition2'), each=(sample_sizes*num_trials)),
@@ -74,6 +69,12 @@ for (i in 1:sims) {
                       Arcsin = asin(sqrt(Prop)) # arcsin-sqrt 
                     )
   
+  condition_1 <- with(subset(study_data_agg, condition == 'condition1'), mean(Prop))
+  condition_2 <- with(subset(study_data_agg, condition == 'condition2'), mean(Prop))
+  condition_1_sd <- with(subset(study_data_agg, condition == 'condition1'), sd(Prop))
+  condition_2_sd <- with(subset(study_data_agg, condition == 'condition2'), sd(Prop))
+  pop_sd <- sd(study_data_agg$Prop)
+  
   # logistic regression
   model <- glmer(response ~ condition + (1 | subject), data=study_data, family="binomial")
   zs <- fixef(model)/sqrt(diag(vcov(model)))
@@ -89,22 +90,25 @@ for (i in 1:sims) {
   sig_prop <- ifelse(t.test(Prop ~ condition, data=study_data_agg, var.equal=T)$p.value <= alpha, TRUE, FALSE)
   
   # enter into data
-  sim_data[i, ] <- c(
-                  i,
-                  beta_alpha,
-                  beta_beta,
-                  sample_sizes,
-                  num_trials,
-                  condition_1,
-                  condition_2,
-                  condition_1_sd,
-                  condition_2_sd,
-                  pop_sd,
-                  sig_logit,
-                  sig_elogit,
-                  sig_arcsin,
-                  sig_prop
-                )
+  data <- c(
+    i,
+    beta_alpha,
+    beta_beta,
+    sample_sizes,
+    num_trials,
+    condition_1,
+    condition_2,
+    condition_1_sd,
+    condition_2_sd,
+    pop_sd,
+    sig_logit,
+    sig_elogit,
+    sig_arcsin,
+    sig_prop
+  )
+  data <- as.vector(data)
+  
+  sim_data[i, names(sim_data) := as.list(data)]
 }
 
 # play the Mario sound when it's done
@@ -112,6 +116,11 @@ beep(8)
 
 # calculate grand_mean for each sim
 sim_data$grand_mean <- (sim_data$condition_1 + sim_data$condition_2) / 2
+
+# calculate diff for each sim
+sim_data$diff <- abs(sim_data$condition_1 - sim_data$condition_2)
+
+sim_data <- data.frame(sim_data)
 
 # overall Type I error rates
 colMeans(sim_data[, c('sig_logit','sig_elogit','sig_arcsin','sig_prop')])
