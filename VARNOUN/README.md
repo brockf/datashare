@@ -10,4 +10,4 @@ Infants’ initially broad links between language and object categories are incr
 
 ## Citation
 
-> Ferguson, B., Havy, M., & Waxman, S.R. (2015). The precision of 12-month-old infants’ link between language and categorization predicts vocabulary size at 12 and 18 months. Frontiers in Psychology, 6:1319.
+> Ferguson, B., Havy, M., & Waxman, S.R. (2015). The precision of 12-month-old infants’ link between language and categorization predicts vocabulary size at 12 and 18 months. *Frontiers in Psychology, 6*:1319.

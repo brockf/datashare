@@ -10,4 +10,4 @@ Fluent speakers' representations of verbs include semantic knowledge about the n
 
 ## Citation
 
-> Ferguson, B., Graf, E., & Waxman, S. R. (2014). Infants use known verbs to learn novel nouns: Evidence from 15- and 19-month-olds. **Cognition, 131**(1), 139-146.
+> Ferguson, B., Graf, E., & Waxman, S. R. (2014). Infants use known verbs to learn novel nouns: Evidence from 15- and 19-month-olds. *Cognition, 131*(1), 139-146.
