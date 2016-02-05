@@ -58,6 +58,55 @@ data_agg_paired <- data_agg %>%
                 ungroup())
 ```
 
+# Visualization
+
+```{r}
+ggplot(data_agg %>%
+          filter(Excluded == 0) %>%
+          mutate(MeanLT = MeanLT/1000), aes(x=factor(Experiment), y=MeanLT, fill=PatternType)) +
+    stat_summary(fun.y='mean', geom='bar', position=position_dodge(.9)) +
+    stat_summary(fun.data='mean_cl_normal', geom='errorbar', width=.1, position=position_dodge(.9), fun.args=list(mult=1)) +
+    coord_cartesian(ylim=c(4,8.5)) +
+    scale_y_continuous('Mean Looking Time (s)') +
+    scale_fill_discrete('Trial') +
+    scale_x_discrete(name="", labels=c("Communicative\n(Exp. 1)",
+                                       "Non-communicative\n(Exp. 2)",
+                                       "Non-communicative\nTransfer\n(Exp. 3)",
+                                       "Communicative\nTransfer\n(Exp. 4)")) + 
+    theme_bw(base_family = "Arial", base_size = 17) +
+    theme(legend.position="top") +
+    theme(panel.grid.minor = element_blank()) +
+    theme(panel.grid.major = element_blank()) +
+    theme(panel.border = element_rect(size=2, color='black')) +
+    theme(axis.title.x = element_text(vjust=-0.3)) +
+    theme(axis.title.y = element_text(vjust=1.15)) +
+    theme(legend.key = element_blank())
+
+ggsave('plot-means.png', width=10, height=6)
+
+ggplot(data_agg_paired %>%
+          filter(Excluded == 0) %>%
+          mutate(NoveltyDiff = NoveltyDiff/1000), aes(x=factor(Experiment), y=NoveltyDiff)) +
+    stat_summary(fun.y='mean', geom='bar', position=position_dodge(.9)) +
+    stat_summary(fun.data='mean_cl_normal', geom='errorbar', width=.1, position=position_dodge(.9), fun.args=list(mult=1)) +
+    scale_y_continuous('Mean Looking Time (s)') +
+    scale_fill_discrete('Trial') +
+    scale_x_discrete(name="", labels=c("Communicative\n(Exp. 1)",
+                                       "Non-communicative\n(Exp. 2)",
+                                       "Non-communicative\nTransfer\n(Exp. 3)",
+                                       "Communicative\nTransfer\n(Exp. 4)")) + 
+    theme_bw(base_family = "Arial", base_size = 17) +
+    theme(legend.position="top") +
+    theme(panel.grid.minor = element_blank()) +
+    theme(panel.grid.major = element_blank()) +
+    theme(panel.border = element_rect(size=2, color='black')) +
+    theme(axis.title.x = element_text(vjust=-0.3)) +
+    theme(axis.title.y = element_text(vjust=1.15)) +
+    theme(legend.key = element_blank())
+
+ggsave('plot-diffs.png', width=10, height=6)
+```
+
 # Experiment Comparisons
 
 ## Exp. 1 vs Exp. 2
