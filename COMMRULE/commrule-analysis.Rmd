@@ -1,0 +1,202 @@
+---
+title: "COMMRULE Analyses"
+author: "Brock Ferguson"
+date: "February 4, 2016"
+output:
+  html_document:
+    toc: true
+    theme: united
+---
+
+# Load requirements and data
+
+```{r warning=FALSE}
+options(dplyr.width = Inf)
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(lme4)
+
+ # includes data for all participants except technical errors
+data <- read.csv('data.csv')
+
+data_agg <- data %>%
+                  filter(Phase == 'Test') %>%
+                  group_by(Subject, Excluded, Experiment, Condition, Age, Sex, TrainingPattern, ContrastPattern, PatternType) %>%
+                  summarise(MeanLT = mean(LT,na.rm=TRUE)) %>%
+                  ungroup()
+
+data_agg_paired <- data_agg %>%
+                    spread(PatternType, MeanLT) %>%
+                    mutate(NoveltyDiff = Novel - Familiar)
+```
+
+# Experiment Summaries
+
+```{r}
+(summary <- data_agg_paired %>%
+                filter(
+                  Excluded == 0
+                ) %>%
+                group_by(Condition) %>%
+                summarise(N = n(),
+                          MeanAge = mean(Age),
+                          N_males = length(Sex[Sex == 'Male']),
+                          MeanFam = mean(Familiar),
+                          SD_F = sd(Familiar),
+                          MeanNovel = mean(Novel),
+                          SD_N = sd(Novel),
+                          MeanDiff = mean(NoveltyDiff),
+                          SD_D = sd(NoveltyDiff),
+                          d = round(mean(NoveltyDiff) / sd(NoveltyDiff),3),
+                          t = round(t.test(NoveltyDiff)$statistic,3),
+                          p = round(t.test(NoveltyDiff)$p.value,4),
+                          ci.l = round(t.test(NoveltyDiff)$conf[[1]],3),
+                          ci.h = round(t.test(NoveltyDiff)$conf[[2]],3)
+                        ) %>%
+                ungroup())
+```
+
+# Experiment Comparisons
+
+## Exp. 1 vs Exp. 2
+
+```{r}
+data_exp_1_v_2 <- data_agg %>%
+                    filter(Excluded == 0) %>%
+                    filter(Experiment == 1 | Experiment == 2) %>%
+                    mutate(
+                      PatternTypeC = ifelse(PatternType == 'Familiar', -.5, .5),
+                      PatternTypeC = PatternTypeC - mean(PatternTypeC),
+                      ExperimentC = ifelse(Experiment == 1, .5, -.5),
+                      ExperimentC = ExperimentC - mean(ExperimentC)
+                    )
+
+model <- aov(MeanLT ~ PatternTypeC*ExperimentC + Error(Subject/PatternTypeC), data = data_exp_1_v_2)
+summary(model)
+```
+
+## Exp. 3 vs Exp. 4
+
+```{r}
+data_exp_3_v_4 <- data_agg %>%
+                    filter(Excluded == 0) %>%
+                    filter(Experiment == 3 | Experiment == 4) %>%
+                    mutate(
+                      PatternTypeC = ifelse(PatternType == 'Familiar', -.5, .5),
+                      PatternTypeC = PatternTypeC - mean(PatternTypeC),
+                      ExperimentC = ifelse(Experiment == 4, .5, -.5),
+                      ExperimentC = ExperimentC - mean(ExperimentC)
+                    )
+
+model <- aov(MeanLT ~ PatternTypeC*ExperimentC + Error(Subject/PatternTypeC), data = data_exp_3_v_4)
+summary(model)
+```
+
+# Trial-by-trial Analyses
+
+```{r warning=FALSE}
+data_trials <- data %>%
+            filter(
+              Excluded == 0,
+              Phase == 'Test'
+            ) %>%
+            mutate(
+              TrialC = Trial - mean(Trial),
+              PatternTypeC = ifelse(PatternType == 'Familiar', -.5, .5),
+              PatternTypeC = PatternTypeC - mean(PatternTypeC)
+             )
+
+model <- lmer(LT ~ TrialC*PatternTypeC*Condition + (1 + TrialC | Subject), data = data_trials)
+drop1(model, ~., test="Chi")
+
+(trial_models <- data %>%
+            filter(
+              Excluded == 0,
+              Phase == 'Test'
+            ) %>%
+            group_by(Condition) %>%
+            mutate(
+              TrialC = Trial - mean(Trial),
+              PatternTypeC = ifelse(PatternType == 'Familiar', -.5, .5),
+              PatternTypeC = PatternTypeC - mean(PatternTypeC)
+             ) %>%
+             do(broom::tidy(lmer(LT ~ TrialC*PatternTypeC + (1 + TrialC | Subject), data = .))) %>%
+             filter(group == 'fixed') %>%
+             mutate(
+               p.value = round((1-pnorm(statistic))*2,4)
+             ))
+
+(trial_models_chis <- data %>%
+            filter(
+              Excluded == 0,
+              Phase == 'Test'
+            ) %>%
+            group_by(Condition) %>%
+            mutate(
+              TrialC = Trial - mean(Trial),
+              PatternTypeC = ifelse(PatternType == 'Familiar', -.5, .5),
+              PatternTypeC = PatternTypeC - mean(PatternTypeC)
+             ) %>%
+             do(broom::tidy(drop1(lmer(LT ~ TrialC*PatternTypeC + (1 + TrialC | Subject), data = .), ~., test="Chi"))) %>%
+             filter(!is.na(Pr.Chi.)))
+```
+
+# Exclusions Analyses
+
+## Summary
+
+```{r}
+(summary <- data_agg_paired %>%
+                group_by(Condition) %>%
+                summarise(N = n(),
+                          MeanAge = mean(Age),
+                          N_males = length(Sex[Sex == 'Male']),
+                          MeanFam = mean(Familiar),
+                          SD_F = sd(Familiar),
+                          MeanNovel = mean(Novel),
+                          SD_N = sd(Novel),
+                          MeanDiff = mean(NoveltyDiff),
+                          SD_D = sd(NoveltyDiff),
+                          d = round(mean(NoveltyDiff) / sd(NoveltyDiff),3),
+                          t = round(t.test(NoveltyDiff)$statistic,3),
+                          p = round(t.test(NoveltyDiff)$p.value,4),
+                          ci.l = round(t.test(NoveltyDiff)$conf[[1]],3),
+                          ci.h = round(t.test(NoveltyDiff)$conf[[2]],3)
+                        ) %>%
+                ungroup())
+```
+
+## Trial-by-trial model
+
+```{r warning=FALSE}
+(trial_models_exclusions <- data %>%
+            filter(
+              Phase == 'Test'
+            ) %>%
+            group_by(Condition) %>%
+            mutate(
+              TrialC = Trial - mean(Trial),
+              PatternTypeC = ifelse(PatternType == 'Familiar', -.5, .5),
+              PatternTypeC = PatternTypeC - mean(PatternTypeC)
+             ) %>%
+             do(broom::tidy(lmer(LT ~ TrialC*PatternTypeC + (1 + TrialC | Subject), data = .))) %>%
+             filter(group == 'fixed') %>%
+             mutate(
+               p.value = round((1-pnorm(statistic))*2,4)
+             ))
+
+(trial_models_exclusions_chis <- data %>%
+            filter(
+              Phase == 'Test'
+            ) %>%
+            group_by(Condition) %>%
+            mutate(
+              TrialC = Trial - mean(Trial),
+              PatternTypeC = ifelse(PatternType == 'Familiar', -.5, .5),
+              PatternTypeC = PatternTypeC - mean(PatternTypeC)
+             ) %>%
+             do(broom::tidy(drop1(lmer(LT ~ TrialC*PatternTypeC + (1 + TrialC | Subject), data = .), ~., test="Chi"))) %>%
+             filter(!is.na(Pr.Chi.)))
+```
