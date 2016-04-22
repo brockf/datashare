@@ -9,4 +9,4 @@ Forthcoming
 
 ## Citation
 
-> Ferguson, B., & Waxman, S. R. (in press). What the [beep]? Six-month-olds Link Novel Communicative Signals to Meaning. *Cognition*.
+> Ferguson, B., & Waxman, S. R. (2016). What the [beep]? Six-month-olds Link Novel Communicative Signals to Meaning. *Cognition*.
