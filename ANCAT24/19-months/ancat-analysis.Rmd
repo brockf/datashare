@@ -1,0 +1,615 @@
+---
+title: "ANCAT Analysis: 19-month-olds"
+output:
+  html_document:
+    toc: true
+    theme: united
+---
+  
+Analysis Timestamp:
+
+```{r}
+date()
+```
+
+## Dependencies
+
+```{r results='hide'}
+library(ggplot2, quietly=T)
+library(lme4, quietly=T)
+library(psych, quietly=T)
+library(dplyr, quietly=T)
+```
+
+## Raw data processing...
+
+```{r results='hide', warning=FALSE}
+source('./process_tobii_data_bf.R')
+auto_process_tobii('ancat-aoi.txt','ancat-phasetiming.txt')
+concat_csv('master.csv')
+
+# fix subject names
+master <- read.csv('master.csv')
+master$ParticipantName <- gsub('[^a-zA-Z0-9]','',master$ParticipantName)
+write.csv(master,'master.csv')
+
+# prepare subjects file
+subjects <- read.csv('subjects.csv')
+
+prepare_master(subjectfile = './subjects.csv', trialfile = FALSE)
+
+# create clean file
+file.copy('master-prepared.csv','master-clean.csv',overwrite = T)
+
+# exclude exclusions
+master_clean <- read.csv('master-clean.csv')
+master_clean <- master_clean[which(master_clean$Excluded == 0), ]
+
+# get rid of additional Condition.x and use the Condition.y column from
+# the subjects file
+master_clean <- master_clean[ , -which(names(master_clean) %in% c("Condition.x"))]
+names(master_clean)[names(master_clean)=="Condition.y"] <- "Condition"
+
+# add KnownAnimal column
+master_clean$KnownAnimal <- 0
+master_clean[which(master_clean$Trial == 'UnfamiliarArmadillo' & master_clean$Armadillo == 1), 'KnownAnimal'] <- 1
+master_clean[which(master_clean$Trial == 'UnfamiliarFlamingo' & master_clean$Flamingo == 1), 'KnownAnimal'] <- 1
+master_clean[which(master_clean$Trial == 'UnfamiliarLizard' & master_clean$Lizard == 1), 'KnownAnimal'] <- 1
+master_clean[which(master_clean$Trial == 'UnfamiliarHedgehog' & master_clean$Hedgehog == 1), 'KnownAnimal'] <- 1
+master_clean[which(master_clean$Trial == 'UnfamiliarLemur' & master_clean$Lemur == 1), 'KnownAnimal'] <- 1
+master_clean[which(master_clean$Trial == 'UnfamiliarRhino' & master_clean$Rhinoceros == 1), 'KnownAnimal'] <- 1
+
+# add KnownVerb column
+master_clean$KnownVerb <- 0
+master_clean[which(master_clean$Trial == 'UnfamiliarHedgehog' & master_clean$Condition == 'informative' & master_clean$Sleep == 1), 'KnownVerb'] <- 1
+master_clean[which(master_clean$Trial == 'UnfamiliarArmadillo' & master_clean$Condition == 'informative' & master_clean$Look == 1), 'KnownVerb'] <- 1
+master_clean[which(master_clean$Trial == 'UnfamiliarLizard' & master_clean$Condition == 'informative' & master_clean$Cry == 1), 'KnownVerb'] <- 1
+master_clean[which(master_clean$Trial == 'UnfamiliarFlamingo' & master_clean$Condition == 'informative' & master_clean$Dance == 1), 'KnownVerb'] <- 1
+master_clean[which(master_clean$Trial == 'UnfamiliarLemur' & master_clean$Condition == 'informative' & master_clean$Eat == 1), 'KnownVerb'] <- 1
+master_clean[which(master_clean$Trial == 'UnfamiliarRhino' & master_clean$Condition == 'informative' & master_clean$Drink == 1), 'KnownVerb'] <- 1
+
+# add Verb column
+master_clean$Verb <- ''
+master_clean[which(master_clean$Trial == 'UnfamiliarHedgehog'), 'Verb'] <- 'Sleep'
+master_clean[which(master_clean$Trial == 'UnfamiliarArmadillo'), 'Verb'] <- 'Look'
+master_clean[which(master_clean$Trial == 'UnfamiliarLizard'), 'Verb'] <- 'Cry'
+master_clean[which(master_clean$Trial == 'UnfamiliarFlamingo'), 'Verb'] <- 'Dance'
+master_clean[which(master_clean$Trial == 'UnfamiliarLemur'), 'Verb'] <- 'Eat'
+master_clean[which(master_clean$Trial == 'UnfamiliarRhino'), 'Verb'] <- 'Drink'
+
+# re-name factor levels.
+levels(master_clean$Condition) <- c('Informative','Neutral')
+
+# re-factor to get rid of any bad condition names which no longer exist in the dataset
+# master_clean$Condition <- factor(as.character(trim(master_clean$Condition)))
+
+#write.csv(master_clean,'master-clean.csv',row.names = FALSE)
+save(master_clean,file='master-clean.Rdata')
+```
+
+## Load and set data options for **eyetrackingR** library.
+
+```{r}
+#devtools::install_github('jwdink/eyetrackingR')
+library(eyetrackingR)
+
+data <- make_eyetrackingr_data(master_clean, 
+                       participant_column = "ParticipantName",
+                       trial_column = "Trial",
+                       time_column = "TimeFromPhaseOnset",
+                       trackloss_column = "TrackLoss",
+                       aoi_columns = c('Animate','Inanimate'),
+                       treat_non_aoi_looks_as_missing = TRUE
+)
+
+# add kind of trial
+data$TrialType <- ifelse(grepl('Unfamiliar',data$Trial), 'Unfamiliar','Familiar')
+data$TrialType <- factor(data$TrialType)
+
+# add Target for Familiar trials
+data$Target <- as.factor( ifelse(test = grepl('(Spoon|Bottle)', data$Trial), 
+                                       yes = 'Inanimate', 
+                                       no  = 'Animate') )
+
+# convert age
+data$Age <- as.numeric(as.character(data$Age))
+```
+
+## Zoom in to response window
+
+```{r}
+response_window <- subset_by_window(data, window_start_time = 15500, window_end_time = 21000, rezero=TRUE, remove=TRUE)
+```
+
+# Familiar Trials
+
+```{r}
+familiar_raw <- filter(response_window, TrialType == 'Familiar')
+```
+
+## Clean by trackloss
+
+```{r}
+trackloss <- trackloss_analysis(data = familiar_raw)
+
+# set a threshold for amount of trackloss that is acceptable
+prop_thresh <- mean(trackloss$TracklossForTrial) + 2*sd(trackloss$TracklossForTrial)
+
+familiar <- clean_by_trackloss(data = familiar_raw, trial_prop_thresh = prop_thresh)
+
+trackloss_clean <- trackloss_analysis(data = familiar)
+trackloss_clean_subjects <- unique(trackloss_clean[, c('ParticipantName','TracklossForParticipant')])
+
+# get mean samples contributed per trials, with SD
+mean(1 - trackloss_clean_subjects$TracklossForParticipant)
+sd(1- trackloss_clean_subjects$TracklossForParticipant)
+
+# get number of trials contributed by participant
+interim_summary <- describe_data(familiar, 'Animate', c('ParticipantName'))
+interim_summary
+
+# remove participants who have less than 3 trials of either type
+subjects_to_remove <- as.character(filter(interim_summary, NumTrials < 3)$ParticipantName)
+
+familiar <- familiar %>%
+                         filter(!(ParticipantName %in% subjects_to_remove))
+
+# final counts:
+final_summary <- describe_data(familiar, 'Animate', c('ParticipantName'))
+final_summary
+
+# how many participants?
+length(unique(final_summary$ParticipantName))
+
+# how many trials?
+mean(final_summary$NumTrials)
+sd(final_summary$NumTrials)
+```
+
+## Summarize 
+
+```{r}
+(familiar_summary <- familiar %>%
+                    group_by(ParticipantName, Target) %>%
+                    summarise(Animate = mean(Animate, na.rm=TRUE),
+                              NTrials = length(unique(Trial))) %>%
+                    ungroup() %>%
+                    group_by(Target) %>%
+                    summarise(MeanAnimate = mean(Animate),
+                              SDAnimate = sd(Animate),
+                              N = n(),
+                              MeanTrials = mean(NTrials),
+                              SDTrials = sd(NTrials)) %>%
+                    ungroup())
+
+subjects <- familiar %>%
+            distinct(ParticipantName,Age_Group,Age,Sex,Condition) %>%
+            group_by(Condition,Age_Group) %>%
+            summarise(N=length(ParticipantName), MeanAge = mean(Age,na.rm=TRUE), N_Males = length(Sex[Sex=='M'])) %>%
+            ungroup()
+
+subjects
+```
+
+## Window Analysis
+
+```{r}
+familiar_summary <- describe_data(familiar, describe_column='Animate', group_columns=c('Target'))
+familiar_summary
+
+# agg by subject
+familiar_sub <- make_time_window_data(familiar, 
+                                       aois='Animate',
+                                       predictor_columns=c('Target','Age','MCDI_Total'),
+                                       summarize_by = "ParticipantName")
+
+# take a quick peek at data
+ggplot(familiar_sub, aes(x=Target,y=Prop,group=ParticipantName)) +
+                      geom_point() +
+                      geom_line()
+
+# simple paired t-test between conditions
+t.test(ArcSin ~ Target, data=familiar_sub, paired=TRUE)
+
+# mixed-effects model
+familiar_trial <- make_time_window_data(familiar, 
+                                         aois='Animate', 
+                                         predictor_columns=c('Target','Age'))
+
+# sum-code and center predictors
+familiar_trial$TargetC <- ifelse(familiar_trial$Target == 'Animate', .5, -.5)
+familiar_trial$TargetC <- familiar_trial$TargetC - mean(familiar_trial$TargetC)
+
+# mixed-effects linear model on subject*trial data
+model <- lmer(ArcSin ~ TargetC + (1 + TargetC | Trial) + (1 + TargetC | ParticipantName), data = familiar_trial, REML = FALSE)
+summary(model)
+drop1(model,~.,test="Chi")
+
+# logistic regression (experimental here)
+model_experimental <- glmer(cbind(SamplesInAOI, (SamplesTotal - SamplesInAOI)) ~ TargetC + (1 + TargetC | Trial) + (1 + TargetC | ParticipantName), data = familiar_trial, family="binomial")
+summary(model_experimental)
+```
+
+## Growth Curve Analysis
+
+```{r}
+# aggregate across trials within subjects in time analysis
+response_time <- make_time_sequence_data(familiar, time_bin_size = 100, 
+                                 predictor_columns = c("Target"),
+                                 aois = "Animate"
+                            )
+
+# visualize time results
+plot(response_time, predictor_column = "Target") + 
+  theme_light() +
+  coord_cartesian(ylim = c(0,1))
+
+# sum-code and center our predictor:
+response_time$TargetC <- ifelse(response_time$Target == 'Animate', .5, -.5)
+response_time$TargetC <- response_time$TargetC - mean(response_time$TargetC)
+
+# Construct model
+model_time_sequence <- lmer(ArcSin ~ TargetC*(ot1+ot2+ot3+ot4) + (1 + ot1 + ot2 + ot3 + ot4 | Trial) + (1 + ot1 + ot2 + ot3 + ot4 | ParticipantName), data = response_time, REML = FALSE)
+summary(model_time_sequence)
+
+plot(response_time, predictor_column = "Target", dv = "ArcSin", model = model_time_sequence) + theme_light()
+```
+
+## Bootstrapped Spline Analysis
+
+```{r}
+response_familiar_time <- make_time_sequence_data(familiar,
+                                  time_bin_size = 10, 
+                                  predictor_columns = c("Target"),
+                                  aois = "Animate",
+                                  summarize_by = "ParticipantName"
+                            )
+
+# visualize timecourse
+plot(response_familiar_time, predictor_column = "Target") + 
+  theme_light() +
+  coord_cartesian(ylim = c(0,1))
+
+# bootstrap with smoothing splines
+bootstrapped_familiar <- make_boot_splines_data(response_familiar_time, 
+                                              predictor_column = 'Target', 
+                                              within_subj = TRUE, 
+                                              bs_samples = 5000, 
+                                              alpha = .05,
+                                              smoother = "smooth.spline")
+
+plot(bootstrapped_familiar)
+
+# show us the divergences where p < .05
+bootstrap_analysis_familiar <- analyze_boot_splines(bootstrapped_familiar)
+summary(bootstrap_analysis_familiar)
+```
+
+## Cluster Analysis
+
+```{r}
+alpha = .20
+num_sub = length(unique((familiar$ParticipantName)))
+threshold_t = qt(p = 1 - alpha/2, 
+                 df = num_sub-1)
+
+df_timeclust <- make_time_cluster_data(response_familiar_time, 
+                                      test= "t.test",
+                                      paired = TRUE,
+                                      predictor_column = "Target", 
+                                      threshold = threshold_t,
+                                      formula = ArcSin ~ Target) 
+
+plot(df_timeclust) +
+  ylab("T-Statistic")
+
+summary(df_timeclust)
+
+clust_analysis <- analyze_time_clusters(df_timeclust, within_subj=TRUE, paired=TRUE, samples=5000, parallel=TRUE)
+clust_analysis
+
+plot(clust_analysis)
+```
+
+## Onset-contingent Analysis
+
+```{r}
+# recode AOIs to target & distractor
+familiar$TrialTarget <- ifelse(familiar$Target == 'Animate', familiar$Animate, familiar$Inanimate)
+familiar$TrialDistractor <- ifelse(familiar$Target == 'Animate', familiar$Inanimate, familiar$Animate)
+
+onsets <- make_onset_data(familiar, onset_time = 0, 
+                          fixation_window_length = 100, target_aoi='TrialTarget')
+
+# participants' ability to orient to the trial target overall:
+plot(onsets) + theme(legend.text=element_text(size=5))
+
+onset_switches <- make_switch_data(onsets, predictor_columns = c("Target","TrialNumber"))
+
+# visualize subject's switch times
+plot(onset_switches)
+
+# center predictor:
+onset_switches$FirstAOIC <- ifelse(onset_switches$FirstAOI == 'TrialTarget', .5, -.5)
+onset_switches$FirstAOIC <- onset_switches$FirstAOIC - mean(onset_switches$FirstAOIC, na.rm=T)
+onset_switches$TargetC <- ifelse(onset_switches$Target == 'Animate', .5, -.5)
+onset_switches$TargetC <- onset_switches$TargetC - mean(onset_switches$TargetC)
+onset_switches$TrialNumberC <- onset_switches$TrialNumber - mean(onset_switches$TrialNumber)
+
+# build model:
+model_switches <- lmer(FirstSwitch ~ (FirstAOIC+TargetC+TrialNumberC)^2 + (1 | Trial) + (1 + TargetC | ParticipantName), data=onset_switches, REML=FALSE)
+summary(model_switches)
+drop1(model_switches,~.,test="Chi")
+```
+
+# Unfamiliar Trials
+
+```{r}
+unfamiliar_raw <- filter(response_window, TrialType == 'Unfamiliar')
+```
+
+## Clean by trackloss
+
+```{r}
+trackloss <- trackloss_analysis(data = unfamiliar_raw)
+
+# set a threshold for amount of trackloss that is acceptable
+prop_thresh <- mean(trackloss$TracklossForTrial) + 2*sd(trackloss$TracklossForTrial)
+
+unfamiliar <- clean_by_trackloss(data = unfamiliar_raw, trial_prop_thresh = prop_thresh)
+
+trackloss_clean <- trackloss_analysis(data = unfamiliar)
+trackloss_clean_subjects <- unique(trackloss_clean[, c('ParticipantName','TracklossForParticipant')])
+
+# get mean samples contributed per trials, with SD
+mean(1 - trackloss_clean_subjects$TracklossForParticipant)
+sd(1- trackloss_clean_subjects$TracklossForParticipant)
+
+# get number of trials contributed by participant
+interim_summary <- describe_data(unfamiliar, 'Animate', c('ParticipantName'))
+interim_summary
+
+# remove participants who have less than 3 trials of either type
+subjects_to_remove <- as.character(filter(interim_summary, NumTrials < 3)$ParticipantName)
+
+unfamiliar <- unfamiliar %>%
+                         filter(!(ParticipantName %in% subjects_to_remove))
+
+# final counts:
+final_summary <- describe_data(unfamiliar, 'Animate', c('ParticipantName'))
+final_summary
+
+# how many participants?
+length(unique(final_summary$ParticipantName))
+
+# how many trials?
+mean(final_summary$NumTrials)
+sd(final_summary$NumTrials)
+```
+
+## Summarize 
+
+```{r}
+(unfamiliar_summary <- unfamiliar %>%
+                    group_by(ParticipantName, Target) %>%
+                    summarise(Animate = mean(Animate, na.rm=TRUE),
+                              NTrials = length(unique(Trial))) %>%
+                    ungroup() %>%
+                    group_by(Target) %>%
+                    summarise(MeanAnimate = mean(Animate),
+                              SDAnimate = sd(Animate),
+                              N = n(),
+                              MeanTrials = mean(NTrials),
+                              SDTrials = sd(NTrials)) %>%
+                    ungroup())
+
+subjects <- unfamiliar %>%
+            distinct(ParticipantName,Age_Group,Age,Sex,Condition) %>%
+            group_by(Condition,Age_Group) %>%
+            summarise(N=length(ParticipantName), MeanAge = mean(Age,na.rm=TRUE), N_Males = length(Sex[Sex=='M'])) %>%
+            ungroup()
+
+subjects
+```
+
+## Window Analysis
+
+```{r}
+unfamiliar_summary <- describe_data(unfamiliar, describe_column='Animate', group_columns=c('Condition'))
+unfamiliar_summary
+
+# agg by subject
+unfamiliar_sub <- make_time_window_data(unfamiliar, 
+                                       aois='Animate',
+                                       predictor_columns=c('Condition','Age','MCDI_Total'),
+                                       summarize_by = "ParticipantName")
+
+# take a quick peek at data
+ggplot(unfamiliar_sub, aes(x=Condition,y=Prop)) +
+                      geom_boxplot() +
+                      geom_point()
+
+# simple paired t-test between conditions
+t.test(ArcSin ~ Condition, data=unfamiliar_sub, var.equal=T)
+
+# mixed-effects model
+unfamiliar_trial <- make_time_window_data(unfamiliar, 
+                                         aois='Animate', 
+                                         predictor_columns=c('Condition','Age'))
+
+# sum-code and center predictors
+unfamiliar_trial$ConditionC <- ifelse(unfamiliar_trial$Condition == 'Informative', .5, -.5)
+unfamiliar_trial$ConditionC <- unfamiliar_trial$ConditionC - mean(unfamiliar_trial$ConditionC)
+
+unfamiliar_trial$AgeC <- unfamiliar_trial$Age - mean(unfamiliar_trial$Age,na.rm=T)
+
+# mixed-effects linear model on subject*trial data
+model <- lmer(ArcSin ~ ConditionC + (1 | Trial) + (1 | ParticipantName), data = unfamiliar_trial, REML = FALSE)
+summary(model)
+drop1(model,~.,test="Chi")
+
+# logistic regression (experimental here)
+model_logistic <- glmer(cbind(SamplesInAOI, (SamplesTotal - SamplesInAOI)) ~ ConditionC + (1 | Trial) + (1 | ParticipantName), data = unfamiliar_trial, family="binomial")
+summary(model_logistic)
+drop1(model_logistic,~.,test="Chi")
+```
+
+## Growth Curve Analysis
+
+```{r}
+# aggregate across trials within subjects in time analysis
+response_time <- make_time_sequence_data(unfamiliar, time_bin_size = 100, 
+                                 predictor_columns = c("Condition","Age_Group"),
+                                 aois = "Animate"
+                            )
+
+# visualize time results
+plot(response_time, predictor_column = "Condition") + 
+  theme_light() +
+  coord_cartesian(ylim = c(0,1))
+
+response_time_sub <- response_time %>%
+                     group_by(ParticipantName,Condition,Age_Group,Time) %>%
+                     summarise(Prop=mean(Prop,na.rm=TRUE)) %>%
+                     ungroup()
+
+ggplot(response_time_sub, aes(x=Time, y=Prop, color=Condition, fill=Condition)) +
+              stat_summary(fun.y='mean', geom='line') +
+              stat_summary(fun.data='mean_cl_normal', geom='ribbon', alpha=.3, color=NA, fun.args=list(mult=1)) +
+              facet_grid(~Age_Group)
+
+# sum-code and center our predictor:
+response_time$ConditionC <- ifelse(response_time$Condition == 'Informative', .5, -.5)
+response_time$ConditionC <- response_time$ConditionC - mean(response_time$ConditionC)
+
+# Construct model
+model_time_sequence <- lmer(ArcSin ~ ConditionC*(ot1+ot2+ot3+ot4) + (1 + ot1 + ot2 + ot3 + ot4 | Trial) + (1 + ot1 + ot2 + ot3 + ot4 | ParticipantName), data = response_time, REML = FALSE)
+summary(model_time_sequence)
+
+plot(response_time, predictor_column = "Condition", dv = "ArcSin", model = model_time_sequence) + theme_light()
+```
+
+## Bootstrapped Spline Analysis
+
+```{r}
+response_unfamiliar_time <- make_time_sequence_data(unfamiliar,
+                                  time_bin_size = 10, 
+                                  predictor_columns = c("Condition","Age_Group"),
+                                  aois = "Animate",
+                                  summarize_by = "ParticipantName"
+                            )
+
+# visualize timecourse
+plot(response_unfamiliar_time, predictor_column = "Condition") + 
+  theme_light() +
+  coord_cartesian(ylim = c(0,1))
+
+# get rid of NA's so we can use splines
+response_unfamiliar_time_nonas <- response_unfamiliar_time[!is.na(response_unfamiliar_time$Prop), ]
+
+# bootstrap with smoothing splines
+bootstrapped_unfamiliar <- make_boot_splines_data(response_unfamiliar_time_nonas, 
+                                              predictor_column = 'Condition', 
+                                              within_subj = FALSE, 
+                                              bs_samples = 5000, 
+                                              alpha = .05,
+                                              smoother = "smooth.spline")
+
+plot(bootstrapped_unfamiliar)
+
+# show us the divergences where p < .05
+bootstrap_analysis_unfamiliar <- analyze_boot_splines(bootstrapped_unfamiliar)
+summary(bootstrap_analysis_unfamiliar)
+```
+
+## Cluster Analysis
+
+```{r}
+alpha = .20
+num_sub = length(unique((response_unfamiliar_time$ParticipantName)))
+threshold_t = qt(p = 1 - alpha/2, 
+                 df = num_sub-1)
+
+df_timeclust <- make_time_cluster_data(response_unfamiliar_time, 
+                                      test= "t.test",
+                                      paired = FALSE,
+                                      predictor_column = "Condition", 
+                                      threshold = threshold_t,
+                                      formula = ArcSin ~ Condition) 
+
+plot(df_timeclust) +
+  ylab("T-Statistic")
+
+summary(df_timeclust)
+
+clust_analysis <- analyze_time_clusters(df_timeclust, within_subj=FALSE, paired=FALSE, samples=5000, parallel=TRUE)
+clust_analysis
+
+plot(clust_analysis)
+```
+
+## Onset-contingent Analysis
+
+```{r}
+onsets <- make_onset_data(unfamiliar, onset_time = 0, 
+                          fixation_window_length = 100, target_aoi='Animate')
+
+# participants' ability to orient to the trial target overall:
+plot(onsets, predictor_columns = "Condition") + theme(legend.text=element_text(size=5))
+
+onset_switches <- make_switch_data(onsets, predictor_columns = c("Condition","TrialNumber"))
+
+# visualize subject's switch times
+plot(onset_switches, predictor_columns = "Condition")
+
+# center predictor:
+onset_switches$FirstAOIC <- ifelse(onset_switches$FirstAOI == 'Animate', .5, -.5)
+onset_switches$FirstAOIC <- onset_switches$FirstAOIC - mean(onset_switches$FirstAOIC, na.rm=TRUE)
+onset_switches$ConditionC <- ifelse(onset_switches$Condition == 'Informative', .5, -.5)
+onset_switches$ConditionC <- onset_switches$ConditionC - mean(onset_switches$ConditionC)
+onset_switches$TrialNumberC <- onset_switches$TrialNumber - mean(onset_switches$TrialNumber)
+
+# build model:
+model_switches <- lmer(FirstSwitch ~ (FirstAOIC+ConditionC+TrialNumberC)^2 + (1 | Trial) + (1 | ParticipantName), data=onset_switches, REML=FALSE)
+summary(model_switches)
+drop1(model_switches,~.,test="Chi")
+
+# within Informative, to look for speed-up over trials:
+model_switches_inf <- lmer(FirstSwitch ~ (FirstAOIC+TrialNumberC)^2 + (1 | Trial) + (1 | ParticipantName), data=onset_switches %>% filter(Condition == 'Informative'), REML=FALSE)
+summary(model_switches_inf)
+drop1(model_switches_inf,~.,test="Chi")
+
+(onset_switches %>%
+    filter(Condition == 'Informative') %>%
+    mutate(Half = ifelse(TrialNumber <= 9, 'First', 'Last')) %>%
+    group_by(ParticipantName,Half,FirstAOI) %>%
+    summarise(
+      FirstSwitch = mean(FirstSwitch,na.rm=T)
+    ) %>%
+    group_by(Half,FirstAOI) %>%
+    summarise(
+      M = mean(FirstSwitch,na.rm=T),
+      SD = sd(FirstSwitch,na.rm=T)
+    ))
+```
+
+# Dump Data for Individual Differences
+
+```{r}
+familiar_divergence <- subset_by_window(familiar, window_start_time = 400, window_end_time = 5490, rezero=TRUE, remove=TRUE)
+
+familiar_divergence_agg <- make_time_window_data(familiar_divergence, 
+                                       aois='Animate',
+                                       predictor_columns=c('Target','Age','MCDI_Total','MCDI_Nouns','MCDI_Verbs'),
+                                       summarize_by = "ParticipantName")
+
+unfamiliar_divergence <- subset_by_window(unfamiliar, window_start_time = 3140, window_end_time = 4060, rezero=TRUE, remove=TRUE)
+
+unfamiliar_divergence_agg <- make_time_window_data(unfamiliar_divergence, 
+                                       aois='Animate',
+                                       predictor_columns=c('Condition','Age','MCDI_Total','MCDI_Nouns','MCDI_Verbs'),
+                                       summarize_by = "ParticipantName")
+
+write.csv(familiar_divergence_agg,'familiar_divergence_agg_19.csv')
+write.csv(unfamiliar_divergence_agg,'unfamiliar_divergence_agg_19.csv')
+```

@@ -1,0 +1,604 @@
+---
+title: "TNV No Word Analysis"
+output:
+  html_document:
+    toc: true
+    theme: united
+---
+
+## Load data and libraries
+
+```{r}
+#devtools::install_github('jwdink/eyetrackingR')
+library(eyetrackingR)
+
+library("dplyr")
+library("lme4")
+library("ggplot2")
+```
+
+# Baseline/Response Analysis
+
+```{r}
+load('noword_data.Rda')
+
+# set data options
+data <- make_eyetrackingr_data(noword_data, 
+                       participant_column = "ParticipantName",
+                       trial_column = "Trial",
+                       time_column = "TimeFromPhaseOnset",
+                       trackloss_column = "TrackLoss",
+                       aoi_columns = c('ActionMatch','ObjectMatch'),
+                       treat_non_aoi_looks_as_missing = TRUE
+)
+```
+
+## Verifying and cleaning
+
+```{r}
+# get rid of NA datapoints while movies loaded, etc.
+data <- filter(data, Subphase != '')
+
+# re-zero time to get rid of "Blackout phase"
+data <- filter(data, TimeFromPhaseOnset < 4000 | data$TimeFromPhaseOnset >= 8000)
+
+# get rid of data >14000ms (which is just Tobii lag; test trials were 14s)
+data <- subset_by_window(data = data,
+                        window_start_time = 0,
+                        window_end_time = 13999
+                      )
+
+# get rid of Blackout phase by re-zeroing after that
+data[which(data$TimeFromPhaseOnset > 8000), 'TimeFromPhaseOnset'] <- data[which(data$TimeFromPhaseOnset > 8000), 'TimeFromPhaseOnset'] - 4000
+
+# analyze trackloss
+trackloss <- trackloss_analysis(data = data)
+
+# remove trials >2SD below the mean
+max_prop <- mean(trackloss$TracklossForTrial) + 2*sd(trackloss$TracklossForTrial)
+
+data_clean <- clean_by_trackloss(data = data,
+                                 trial_prop_thresh = max_prop)
+
+# calculate mean proportion of samples
+trackloss_clean <- trackloss_analysis(data = data_clean)
+sample_props <- trackloss_clean %>%
+                group_by(ParticipantName) %>%
+                summarise(MeanProp = mean(1-TracklossForTrial)) %>%
+                ungroup()
+                
+sample_props <- merge(sample_props, unique(data_clean[, c('ParticipantName','Language')]), by='ParticipantName', all.y=F)
+
+summary_sample_props <- sample_props %>%
+                        group_by(Language) %>%
+                        summarise(Mean = mean(MeanProp), SD=sd(MeanProp)) %>%
+                        ungroup()
+
+summary_sample_props
+
+# count countributed trials
+summary_trials <- data_clean %>%
+                group_by(ParticipantName, Language) %>%
+                summarise(Trials_N = length(unique(Trial))) %>%
+                ungroup() %>%
+                group_by(Language) %>%
+                summarise(Mean = mean(Trials_N), SD=sd(Trials_N)) %>%
+                ungroup()
+
+summary_trials
+```
+
+## Participant Data
+
+```{r}
+subjects <- unique(data_clean[, c('ParticipantName','Language','Gender','Age','MCDI','Noun','Verb','Noun_Prop','Verb_Prop')])
+subjects$Age <- as.numeric(as.character(subjects$Age))
+
+subjects
+
+conditions <- subjects %>%
+              group_by(Language) %>%
+              summarise(MeanAge = mean(Age), N=length(Age), N_Males = sum(Gender == 'male'), MeanMCDI=mean(MCDI)) %>%
+              ungroup()
+
+conditions
+
+# compare MCDI counts
+t.test(MCDI ~ Language, data=subjects,var.equal=T)
+
+# compare MCDI scores as proportions of nouns/verbs/total
+subjects$MaxNoun <- ifelse(subjects$Language == 'English', 51, 47)
+subjects$MaxVerb <- ifelse(subjects$Language == 'English', 16, 24)
+subjects$MaxTotal <- ifelse(subjects$Language == 'English', 99, 109)
+
+# recalculate Prop columns because they are wrong
+subjects$Noun_Prop <- subjects$Noun / subjects$MaxNoun
+subjects$Verb_Prop <- subjects$Verb / subjects$MaxVerb
+subjects$MCDI_Prop <- subjects$MCDI / subjects$MaxTotal
+
+t.test(MCDI_Prop ~ Language, data=subjects,var.equal=T)
+```
+
+## Bootstrapped splines
+
+```{r}
+trial_time_by_subj = make_time_sequence_data(data = data_clean, 
+                        time_bin_size = 100, 
+                        aois= "ActionMatch", 
+                        predictor_columns = "Language",
+                        summarize_by = "ParticipantName")
+
+# get rid of NAs for splines
+trial_time_by_subj_nonas <- trial_time_by_subj[!is.na(trial_time_by_subj$Prop), ]
+
+bootstraps <- make_boot_splines_data(trial_time_by_subj_nonas, 
+                                              predictor_column = 'Language', 
+                                              within_subj = FALSE, 
+                                              samples = 1000, 
+                                              alpha = .05,
+                                              smoother = "smooth.spline") 
+
+plot(bootstraps)
+
+bootstraps_analysis <- analyze_boot_splines(bootstraps)
+summary(bootstraps_analysis)
+```
+
+# Baseline phase
+
+```{r}
+baseline_clean <- filter(data_clean, TimeFromPhaseOnset < 4000)
+
+baseline_clean_window <- subset_by_window(baseline_clean, window_start_time=0, window_end_time=4000, rezero=FALSE)
+```
+
+## Cluster analysis baseline
+ 
+```{r}
+trial_time_by_subj = make_time_sequence_data(data = baseline_clean_window, 
+                        time_bin_size = 25, 
+                        aois= "ActionMatch", 
+                        predictor_columns = "Language",
+                        summarize_by = "ParticipantName")
+
+# visualize time results
+plot(trial_time_by_subj, predictor_column = "Language") + 
+  theme_light() +
+  coord_cartesian(ylim = c(0,1))
+
+alpha = .2
+num_sub = length(unique((data_clean$ParticipantName)))
+threshold_t = qt(p = 1 - alpha/2, 
+                 df = num_sub-1) # pick threshold t based on alpha = .05 two tailed
+
+df_timeclust <- make_time_cluster_data(trial_time_by_subj, 
+                                      predictor_column = "Language", 
+                                      threshold = threshold_t,
+                                      test = "t.test", paired = FALSE,
+                                      formula = LogitAdjusted ~ Language
+                                 )
+
+plot(df_timeclust) +
+  ylab("T-Statistic")
+
+summary(df_timeclust)
+
+clust_analysis = analyze_time_clusters(df_timeclust, within_subj = FALSE, paired=FALSE, samples=1000, parallel=TRUE)
+clust_analysis
+
+plot(clust_analysis)
+```
+
+## Growth Curve Analysis
+
+```{r}
+baseline_time = make_time_sequence_data(data = baseline_clean_window, 
+                        time_bin_size = 100, 
+                        aois= "ActionMatch", 
+                        predictor_columns = "Language")
+
+baseline_time$LanguageC <- ifelse(baseline_time$Language == 'Mandarin', .5, -.5)
+baseline_time$LanguageC <- baseline_time$LanguageC - mean(baseline_time$LanguageC)
+
+model <- lmer(LogitAdjusted ~ LanguageC*(ot1+ot2+ot3+ot4+ot5) + (1 + ot1+ot2+ot3+ot4+ot5 | Trial) + (1 + ot1+ot2+ot3+ot4+ot5 | ParticipantName), data=baseline_time, REML=F)
+summary(model)
+#drop1(model,~.,test="Chi")
+model_null <- lmer(LogitAdjusted ~ LanguageC + ot1+ot2+ot3+ot4+ot5 + LanguageC:ot1 + LanguageC:ot2 + LanguageC:ot4 + LanguageC:ot5 + (1 + ot1+ot2+ot3+ot4+ot5 | Trial) + (1 + ot1+ot2+ot3+ot4+ot5 | ParticipantName), data=baseline_time, REML=F)
+
+anova(model,model_null)
+
+plot(baseline_time, predictor_column = "Language", dv = "LogitAdjusted", model = model) + theme_light()
+```
+
+## Aggregate differences
+
+```{r}
+# aggregate by subject across the response window
+baseline_clean_window_agg <- make_time_window_data(baseline_clean_window, 
+                                         aois='ActionMatch',
+                                         predictor_columns=c('Language','Age'),
+                                         summarize_by = "ParticipantName")
+
+# take a quick peek at data
+plot(baseline_clean_window_agg, predictor_columns="Language")
+
+t.test(LogitAdjusted ~ Language, data = baseline_clean_window_agg, var.equal=T)
+
+conditions_baseline <- baseline_clean_window_agg %>%
+                       group_by(ParticipantName,Language) %>%
+                       summarise(ActionMatch = mean(Prop)) %>%
+                       ungroup() %>%
+                       group_by(Language) %>%
+                       summarise(MeanActionMatch = mean(ActionMatch), SDActionMatch = sd(ActionMatch), N=length(ActionMatch)) %>%
+                       ungroup()
+
+conditions_baseline
+```
+
+## Comparisons to chance within divergence
+
+```{r}
+baseline_clean_divergence <- subset_by_window(baseline_clean, window_start_time=2200, window_end_time=3050, rezero=FALSE)
+
+baseline_clean_divergence_agg <- make_time_window_data(baseline_clean_divergence, 
+                                         aois='ActionMatch',
+                                         predictor_columns=c('Language','Age'),
+                                         summarize_by = "ParticipantName")
+
+with(subset(baseline_clean_divergence_agg, Language == 'English'), t.test(LogitAdjusted,mu=0))
+
+with(subset(baseline_clean_divergence_agg, Language == 'Mandarin'), t.test(LogitAdjusted,mu=0))
+```
+
+# Response phase
+
+```{r}
+response_clean <- filter(data_clean, TimeFromPhaseOnset > 4000)
+
+response_clean_window <- subset_by_window(response_clean, window_start_time=4000, window_end_time=10000, rezero=FALSE)
+```
+
+## Cluster analysis response
+ 
+```{r}
+trial_time_by_subj = make_time_sequence_data(data = response_clean_window, 
+                        time_bin_size = 25, 
+                        aois= "ActionMatch", 
+                        predictor_columns = "Language",
+                        summarize_by = "ParticipantName")
+
+# visualize time results
+plot(trial_time_by_subj, predictor_column = "Language") + 
+  theme_light() +
+  coord_cartesian(ylim = c(0,1))
+
+alpha = .2
+num_sub = length(unique((response_clean_window$ParticipantName)))
+threshold_t = qt(p = 1 - alpha/2, 
+                 df = num_sub-1) # pick threshold t based on alpha = .05 two tailed
+
+df_timeclust <- make_time_cluster_data(trial_time_by_subj, 
+                                      predictor_column = "Language", 
+                                      threshold = threshold_t,
+                                      test = "t.test", paired = FALSE,
+                                      formula = LogitAdjusted ~ Language
+                                 )
+
+plot(df_timeclust) +
+  ylab("T-Statistic")
+
+summary(df_timeclust)
+
+clust_analysis = analyze_time_clusters(df_timeclust, within_subj = FALSE, paired=FALSE, samples=1000, parallel=TRUE)
+clust_analysis
+
+plot(clust_analysis)
+```
+
+## Growth Curve Analysis
+
+```{r}
+response_time = make_time_sequence_data(data = response_clean_window, 
+                        time_bin_size = 100, 
+                        aois= "ActionMatch", 
+                        predictor_columns = "Language")
+
+response_time$LanguageC <- ifelse(response_time$Language == 'Mandarin', .5, -.5)
+response_time$LanguageC <- response_time$LanguageC - mean(response_time$LanguageC)
+
+model <- lmer(LogitAdjusted ~ LanguageC*(ot1+ot2+ot3+ot4+ot5) + (1 + ot1+ot2+ot3+ot4+ot5 | Trial) + (1 + ot1+ot2+ot3+ot4+ot5 | ParticipantName), data=response_time, REML=F)
+summary(model)
+#drop1(model,~.,test="Chi")
+
+plot(response_time, predictor_column = "Language", dv = "LogitAdjusted", model = model) + theme_light()
+```
+
+## Aggregate differences
+
+```{r}
+# aggregate by subject across the response window
+response_clean_window_agg <- make_time_window_data(response_clean_window, 
+                                         aois='ActionMatch',
+                                         predictor_columns=c('Language','Age'),
+                                         summarize_by = "ParticipantName")
+
+# take a quick peek at data
+plot(response_clean_window_agg, predictor_columns="Language")
+
+t.test(LogitAdjusted ~ Language, data = response_clean_window_agg, var.equal=T)
+
+conditions_response <- response_clean_window_agg %>%
+                       group_by(ParticipantName,Language) %>%
+                       summarise(ActionMatch = mean(Prop)) %>%
+                       ungroup() %>%
+                       group_by(Language) %>%
+                       summarise(MeanActionMatch = mean(ActionMatch), SDActionMatch = sd(ActionMatch), N=length(ActionMatch)) %>%
+                       ungroup()
+
+conditions_response
+```
+
+## 2x2 ANOVA
+```{r}
+anova_df <- baseline_clean_window_agg %>%
+            select(ParticipantName,Language,LogitAdjusted) %>%
+            rename(Baseline = LogitAdjusted) %>%
+            left_join(response_clean_window_agg) %>%
+            select(ParticipantName,Language,Baseline,LogitAdjusted) %>%
+            rename(Response = LogitAdjusted) %>%
+            tidyr::gather(key='Phase', value='LogitAdjusted', Baseline, Response)
+            
+anova_df$PhaseC <- ifelse(anova_df$Phase == 'Baseline', -.5, .5)
+anova_df$LanguageC <- ifelse(anova_df$Language == 'English', -.5, .5)
+
+model <- aov(LogitAdjusted ~ LanguageC*PhaseC + Error(ParticipantName/PhaseC), data=anova_df)
+summary(model)
+```
+
+## Paper figures
+
+### Baseline figure
+
+```{r}
+# create time data for entire window, aggregated only by subjects
+baseline_time_full <- make_time_sequence_data(baseline_clean, time_bin_size = 100, 
+                                 predictor_columns = c("Language"),
+                                 aois = "ActionMatch",
+                                 summarize_by = c('ParticipantName')
+                            )
+
+# rescale into seconds
+baseline_time_full$Time <- baseline_time_full$Time / 1000
+
+p <- ggplot(baseline_time_full, aes(x=Time, y=Prop, color=Language)) +
+      annotate('rect', xmin=2.3, xmax=2.8, ymin=0, ymax=Inf, fill='#cccccc', alpha=0.3, color=NA) +
+      geom_hline(yint=.5, alpha=.4, linetype="dashed") +
+      stat_summary(fun.y='mean', geom='line', alpha=.7) +
+      stat_summary(aes(fill=Language), fun.data='mean_cl_normal', geom='ribbon', width=.1, mult=1, alpha=.1, color=NA) +
+      geom_text(label="*", x=2.55, y=0.7, colour="#000000", size=14) +
+      scale_y_continuous(name="Proportion Looking to Familiar Action") +
+      scale_x_continuous(name="Time (s)", breaks=seq(0,4)) +
+      scale_color_discrete("", labels=c('US','China')) +
+      scale_fill_discrete(guide = FALSE) +
+      coord_cartesian(ylim=c(0,1)) +
+      theme_bw(base_size = 16) +
+      theme(legend.position=c(.75,.9)) +
+      theme(axis.title.y = element_text(vjust=1)) +
+      theme(panel.grid.minor = element_blank()) +
+      theme(panel.grid.major = element_blank()) +
+      theme(panel.border = element_blank()) +
+      theme(axis.line = element_line())  
+
+png(filename = "plot-noword-baseline.png",
+    width = 3500, height = 2500, units = "px", pointsize = 16,
+    bg = "white", res = 400)
+p
+dev.off()
+p
+```
+
+### Response figure
+
+```{r}
+# create time data for entire window, aggregated only by subjects
+response_time_full <- make_time_sequence_data(response_clean, time_bin_size = 100, 
+                                 predictor_columns = c("Language"),
+                                 aois = "ActionMatch",
+                                 summarize_by = c('ParticipantName')
+                            )
+
+# rescale into seconds, and zero
+response_time_full$Time <- (response_time_full$Time-4000) / 1000
+
+p <- ggplot(response_time_full, aes(x=Time, y=Prop, color=Language)) +
+      geom_hline(yint=.5, alpha=.4, linetype="dashed") +
+      stat_summary(fun.y='mean', geom='line', alpha=.7) +
+      stat_summary(aes(fill=Language), fun.data='mean_cl_normal', geom='ribbon', width=.1, mult=1, alpha=.1, color=NA) +
+      scale_y_continuous(name="Proportion Looking to Familiar Action") +
+      scale_x_continuous(name="Time (s)", breaks=seq(0,6)) +
+      scale_colour_discrete("", labels=c('US','China')) +
+      scale_fill_discrete(guide = FALSE) +
+      coord_cartesian(ylim=c(0,1)) +
+      theme_bw(base_size = 16) +
+      theme(legend.position=c(.9,.9)) +
+      theme(axis.title.y = element_text(vjust=1)) +
+      theme(panel.grid.minor = element_blank()) +
+      theme(panel.grid.major = element_blank()) +
+      theme(panel.border = element_blank()) +
+      theme(axis.line = element_line())  
+
+png(filename = "plot-noword-response.png",
+    width = 3500, height = 2500, units = "px", pointsize = 16,
+    bg = "white", res = 400)
+p
+dev.off()
+p
+```
+
+### Merged figures
+
+```{r}
+baseline_time_full$Phase <- 'Baseline'
+response_time_full$Phase <- 'Response'
+
+baseline_time_full$Text <- 'Now look, they\'re different'
+response_time_full$Text <- 'What do you see now?'
+
+baseline_time_full$TextOffset <- 1.11
+response_time_full$TextOffset <- 1.38
+
+merged <- rbind(baseline_time_full, response_time_full)
+
+p <- ggplot(merged, aes(x=Time, y=Prop, color=Language)) +
+      geom_hline(yint=.5, alpha=.4, linetype="dashed") +
+      stat_summary(fun.y='mean', geom='line', alpha=.7, size=1) +
+      stat_summary(aes(fill=Language), fun.data='mean_cl_normal', geom='ribbon', width=.1, mult=1, alpha=.1, color=NA) +
+      geom_text(aes(label=Text, x=TextOffset), y=0.95, size=3.2, fontface=3, colour="#000000") +
+      #geom_text(label="**", x=2.5, y=0.7, colour="#000000", size=14) +
+      scale_y_continuous(name="Proportion Looking to Familiar Action") +
+      scale_x_continuous(name="Time (s)", breaks=seq(0,6)) +
+      scale_color_discrete("Country", labels=c('US','China')) +
+      scale_fill_discrete(guide = FALSE) +
+      coord_cartesian(ylim=c(0,1)) +
+      theme_bw(base_size = 16) +
+      theme(legend.position=c(.9,.82)) +
+      theme(axis.title.y = element_text(vjust=1)) +
+      theme(panel.grid.minor = element_blank()) +
+      theme(panel.grid.major = element_blank()) +
+      theme(panel.border = element_rect(color='black')) +
+      #theme(axis.line = element_line()) +
+      theme(strip.background = element_blank(),
+      strip.text.x = element_blank()) +
+      facet_grid(.~Phase, scales="free", space="free") 
+
+png(filename = "plot-noword-merged.png",
+    width = 3600, height = 2000, units = "px", pointsize = 16,
+    bg = "white", res = 400)
+p
+dev.off()
+p
+```
+
+# Familiarization / Contrast
+
+```{r}
+load('master-clean.Rdata')
+
+master_clean <- master_clean %>%
+                filter(Condition == 'NoWord') %>%
+                filter(Phase == 'Familiarization')
+
+# we are going to re-compute TrackLoss because we aren't using traditional AOIs
+# we just want to know if they were looking at the screen
+master_clean$TrackLoss <- ifelse(master_clean$GazeXAvg > 0 & master_clean$GazeYAvg > 0, NA, TRUE)
+
+# we just want to know whether they were looking to the screen
+master_clean$Looking <- ifelse(is.na(master_clean$TrackLoss), 1, 0)
+
+# set data options
+fam_data <- make_eyetrackingr_data(master_clean, 
+                       participant_column = "ParticipantName",
+                       trial_column = "Trial",
+                       time_column = "TimeFromPhaseOnset",
+                       trackloss_column = "TrackLoss",
+                       aoi_columns = c('Looking'),
+                       treat_non_aoi_looks_as_missing = TRUE
+)
+
+# re-code as TRUE or FALSE so we can sum total atteniton
+fam_data$Looking <- ifelse(is.na(fam_data$Looking), FALSE, TRUE)
+
+# we need to segment into Beefy, Familiarization, and Contrast phases by time
+
+# timings from video (in Vault /TNV Mandarin/Eyetracking in Beijing/Stimuli/Video Stimuli/Mandarin No Word/)
+#
+# 0 baby
+# 5000 beefy video
+# 22700 beefy video ends
+# 23500 first fam video starts
+# 49667 contrast videos start
+# 62183 video ends
+
+fam_data_beefy <- subset_by_window(data = fam_data,
+                                   window_start_time=5000,
+                                   window_end_time=22700)
+
+fam_data_beefy$Phase <- 'Beefy'
+
+fam_data_familiarization <- subset_by_window(data = fam_data,
+                                   window_start_time=23500,
+                                   window_end_time=49666)
+
+fam_data_contrast <- subset_by_window(data = fam_data,
+                                   window_start_time=49667,
+                                   window_end_time=62183)
+
+fam_data_contrast$Phase <- 'Contrast'
+```
+
+## Compare attention
+
+```{r}
+# no trackloss cleaning, because we are just interested in total attention
+
+# Familiarization
+familiarization_sample_props <- fam_data_familiarization %>%
+                                group_by(Language,ParticipantName) %>%
+                                summarise(Looking = mean(Looking)) %>%
+                                ungroup()
+
+t.test(Looking ~ Language,data=familiarization_sample_props,var.equal=T)
+
+familiarization_sample_props_language <- familiarization_sample_props %>%
+                                         group_by(Language) %>%
+                                         summarise(MeanLooking = mean(Looking), SD=sd(Looking)) %>%
+                                         ungroup()
+
+familiarization_sample_props_language
+
+# Contrast
+contrast_sample_props <- fam_data_contrast %>%
+                         group_by(Language,ParticipantName) %>%
+                         summarise(Looking = mean(Looking)) %>%
+                         ungroup()
+
+t.test(Looking ~ Language,data=contrast_sample_props,var.equal=T)
+
+contrast_sample_props_language <- contrast_sample_props %>%
+                                         group_by(Language) %>%
+                                         summarise(MeanLooking = mean(Looking), SD=sd(Looking)) %>%
+                                         ungroup()
+
+contrast_sample_props_language
+
+# Familiarization + Contrast
+famcontrast_sample_props <- rbind(fam_data_contrast, fam_data_familiarization) %>%
+                         group_by(Language,ParticipantName) %>%
+                         summarise(Looking = mean(Looking)) %>%
+                         ungroup()
+
+t.test(Looking ~ Language,data=famcontrast_sample_props,var.equal=T)
+
+famcontrast_sample_props_language <- famcontrast_sample_props %>%
+                                         group_by(Language) %>%
+                                         summarise(MeanLooking = mean(Looking), SD=sd(Looking)) %>%
+                                         ungroup()
+
+famcontrast_sample_props_language
+
+# Familiarization + Contrast ANOVA
+famcontrast_sample_props_anova <- rbind(fam_data_contrast, fam_data_familiarization) %>%
+                         group_by(Language,Phase,ParticipantName) %>%
+                         summarise(Looking = mean(Looking)) %>%
+                         ungroup()
+
+famcontrast_sample_props_anova$PhaseC <- ifelse(famcontrast_sample_props_anova$Phase == 'Familiarization', -.5, .5)
+famcontrast_sample_props_anova$PhaseC <- famcontrast_sample_props_anova$PhaseC - mean(famcontrast_sample_props_anova$PhaseC)
+
+famcontrast_sample_props_anova$LanguageC <- ifelse(famcontrast_sample_props_anova$Language == 'English', -.5, .5)
+famcontrast_sample_props_anova$LanguageC <- famcontrast_sample_props_anova$LanguageC - mean(famcontrast_sample_props_anova$LanguageC)
+
+model <- aov(Looking ~ LanguageC*PhaseC + Error(ParticipantName/PhaseC), data=famcontrast_sample_props_anova)
+summary(model)
+
+```
